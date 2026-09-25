@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Novum Trace Video Agent</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">NOVUM TRACE</div>
+        <h1>Video Agent</h1>
+        <p>Prompt + narration + clips -> finished 9:16 YouTube Short.</p>
+      </div>
+      <div class="pill"><span class="dot"></span> V1 local FFmpeg renderer</div>
+    </header>
+
+    <main class="grid">
+      <section class="panel creator">
+        <div class="panel-heading">
+          <div>
+            <h2>Create Short</h2>
+            <p>Editing is local. AI video generation stays off.</p>
+          </div>
+          <div class="budget-card">
+            <span>Generation budget</span>
+            <strong>0 used</strong>
+          </div>
+        </div>
+
+        <form id="createForm">
+          <div class="field-row two">
+            <label>
+              <span>Project title</span>
+              <input id="title" name="title" required placeholder="OpenAI Agent Government Incident" />
+            </label>
+            <label>
+              <span>Max AI generations</span>
+              <input id="max_generations" name="max_generations" type="number" min="0" max="20" value="0" />
+              <small>V1 never spends these credits.</small>
+            </label>
+          </div>
+
+          <label>
+            <span>Editing prompt</span>
+            <textarea id="prompt" name="prompt" rows="3" placeholder="Serious cinematic cybersecurity Short, fast cuts, bold captions, dark tech atmosphere."></textarea>
+          </label>
+
+          <div class="field-row two">
+            <label>
+              <span>Opening hook</span>
+              <input id="hook_text" name="hook_text" placeholder="AN AI AGENT BROKE IN" />
+            </label>
+            <label>
+              <span>Ending question</span>
+              <input id="ending_question" name="ending_question" value="WHAT HAPPENS NEXT?" />
+            </label>
+          </div>
+
+          <label>
+            <span>Narration script</span>
+            <textarea id="script" name="script" rows="7" placeholder="Paste the ElevenLabs narration script for the best scene timing and captions."></textarea>
+          </label>
+
+          <div class="upload-grid">
+            <label class="upload-card">
+              <span class="upload-icon">A</span>
+              <strong>Narration</strong>
+              <small>MP3, WAV, M4A</small>
+              <input id="narration" name="narration" type="file" accept="audio/*" required />
+              <span id="narrationName" class="file-name">Choose audio</span>
+            </label>
+
+            <label class="upload-card">
+              <span class="upload-icon">V</span>
+              <strong>Visual clips</strong>
+              <small>MP4, MOV, JPG, PNG - multiple</small>
+              <input id="clips" name="clips" type="file" accept="video/*,image/*" multiple />
+              <span id="clipsName" class="file-name">Choose clips</span>
+            </label>
+
+            <label class="upload-card">
+              <span class="upload-icon">M</span>
+              <strong>Music (optional)</strong>
+              <small>Mixed below narration</small>
+              <input id="music" name="music" type="file" accept="audio/*" />
+              <span id="musicName" class="file-name">Choose music</span>
+            </label>
+          </div>
+
+          <div class="preset">
+            <div><span>Preset</span><strong>Novum Trace Short</strong></div>
+            <div><span>Format</span><strong>1080 x 1920</strong></div>
+            <div><span>FPS</span><strong>30</strong></div>
+            <div><span>Renderer</span><strong>FFmpeg</strong></div>
+          </div>
+
+          <button class="primary" type="submit" id="createButton">Create Short</button>
+          <div id="formError" class="error hidden"></div>
+        </form>
+      </section>
+
+      <aside class="panel status-panel">
+        <div class="panel-heading compact">
+          <div>
+            <h2>Render Status</h2>
+            <p id="statusSubtitle">No active render.</p>
+          </div>
+        </div>
+
+        <div id="emptyState" class="empty-state">
+          <div class="empty-art">NT</div>
+          <h3>Ready for a project</h3>
+          <p>Upload narration and visuals, then create the Short.</p>
+        </div>
+
+        <div id="activeState" class="hidden">
+          <div class="progress-header">
+            <span id="statusLabel">Queued</span>
+            <strong id="progressValue">0%</strong>
+          </div>
+          <div class="progress-track"><div id="progressBar"></div></div>
+
+          <div class="metrics">
+            <div><span>Duration</span><strong id="durationValue">-</strong></div>
+            <div><span>Scenes</span><strong id="scenesValue">-</strong></div>
+            <div><span>AI clips</span><strong id="generationValue">0</strong></div>
+          </div>
+
+          <video id="preview" class="preview hidden" controls playsinline></video>
+
+          <div id="actions" class="actions hidden">
+            <a id="downloadLink" class="primary link-button" href="#">Download MP4</a>
+            <button id="copyTitle" class="secondary" type="button">Copy title</button>
+            <button id="copyDescription" class="secondary" type="button">Copy description</button>
+          </div>
+
+          <div id="metadataBox" class="metadata hidden">
+            <span>YouTube title</span>
+            <strong id="metadataTitle"></strong>
+            <span>Description</span>
+            <p id="metadataDescription"></p>
+          </div>
+
+          <div id="renderError" class="error hidden"></div>
+        </div>
+      </aside>
+    </main>
+
+    <section class="panel history-panel">
+      <div class="panel-heading compact">
+        <div>
+          <h2>Project History</h2>
+          <p>Recent renders saved on this server.</p>
+        </div>
+        <button id="refreshHistory" class="secondary" type="button">Refresh</button>
+      </div>
+      <div id="history" class="history-list"></div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
