@@ -2,6 +2,8 @@
 
 A self-hosted automatic editor for vertical YouTube Shorts.
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/693vishnur-arch/novum-trace-video-agent)
+
 Input:
 - Editing prompt
 - ElevenLabs narration (MP3/WAV/M4A)
@@ -36,6 +38,7 @@ The V1 renderer uses FFmpeg for editing. It does not control CapCut and does not
 - Project history and render status
 - Generation budget tracking
 - Docker deployment
+- Render Blueprint deployment
 
 ## Quick start
 
@@ -61,6 +64,17 @@ docker compose up --build
 ```
 
 Then open `http://localhost:8000`.
+
+## Render
+
+The repository includes a root-level `render.yaml` Blueprint configured for:
+- Docker runtime
+- Singapore region
+- `/health` health checks
+- deployment after GitHub CI passes
+- Free compute for the first test deployment
+
+Free Render services are suitable for testing, but their local filesystem is ephemeral. Uploads, project history, and finished videos can be lost after a restart, redeploy, or idle spin-down. For regular use, upgrade the compute plan and attach a persistent disk at `/app/data`.
 
 ## Typical workflow
 
