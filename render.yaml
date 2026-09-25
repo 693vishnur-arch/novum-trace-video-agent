@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: novum-trace-video-agent
+    runtime: docker
+    repo: https://github.com/693vishnur-arch/novum-trace-video-agent
+    branch: main
+    region: singapore
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 300
