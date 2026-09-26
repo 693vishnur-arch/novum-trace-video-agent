@@ -16,6 +16,8 @@ from backend.app.models import Scene
 from backend.app.services.captions import build_ass
 from backend.app.services.media import is_image, is_video, run
 
+VOICE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+
 
 def _video_filter() -> str:
     return (
@@ -123,9 +125,11 @@ def render_video(
         fade_out_start = max(total_duration - 1.0, 0.0)
         filter_complex = (
             f"[0:v]ass='{ass_path}'[v];"
+            f"[1:a]{VOICE_FILTER}[voice];"
             f"[2:a]volume={music_volume:.3f},atrim=0:{total_duration:.3f},"
             f"afade=t=in:st=0:d=0.5,afade=t=out:st={fade_out_start:.3f}:d=1[m];"
-            "[1:a][m]amix=inputs=2:duration=first:dropout_transition=2[a]"
+            "[voice][m]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,"
+            "alimiter=limit=0.95[a]"
         )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -135,20 +139,23 @@ def render_video(
             "-map", "[v]", "-map", "[a]",
             "-t", f"{total_duration:.3f}",
             *_encode_args(),
-            "-c:a", "aac", "-b:a", "128k",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
             "-movflags", "+faststart",
             str(final_path),
         ]
     else:
-        filter_complex = f"[0:v]ass='{ass_path}'[v]"
+        filter_complex = (
+            f"[0:v]ass='{ass_path}'[v];"
+            f"[1:a]{VOICE_FILTER}[a]"
+        )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(concat_video), "-i", str(narration_path),
             "-filter_complex", filter_complex,
-            "-map", "[v]", "-map", "1:a:0",
+            "-map", "[v]", "-map", "[a]",
             "-t", f"{total_duration:.3f}",
             *_encode_args(),
-            "-c:a", "aac", "-b:a", "128k",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
             "-movflags", "+faststart",
             str(final_path),
         ]
