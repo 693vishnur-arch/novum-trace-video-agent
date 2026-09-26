@@ -43,5 +43,6 @@ def test_build_ass_splits_long_scene_without_truncation(tmp_path):
 
     body_events = [line for line in ass.splitlines() if ",Caption," in line]
     assert len(body_events) >= 2
-    assert "turn the servers off." in ass
+    flattened = ass.replace(r"\\N", " ")
+    assert "turn the servers off." in flattened
     assert "..." not in ass
