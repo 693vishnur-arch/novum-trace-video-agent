@@ -7,6 +7,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,4 +21,4 @@ jobs:
       - name: Compile
         run: python -m compileall backend
       - name: Test
-        run: pytest -q
+        run: python -m pytest -q
