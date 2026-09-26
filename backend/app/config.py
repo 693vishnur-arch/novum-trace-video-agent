@@ -4,9 +4,15 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data" / "projects"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-OUTPUT_WIDTH = 1080
-OUTPUT_HEIGHT = 1920
-OUTPUT_FPS = 30
+# Free Render instances have 512 MB RAM and 0.1 CPU. Keep V1 deliberately
+# lightweight so a 30-60 second Short can finish without the service restarting.
+OUTPUT_WIDTH = 720
+OUTPUT_HEIGHT = 1280
+OUTPUT_FPS = 24
+FFMPEG_THREADS = 1
+FFMPEG_PRESET = "ultrafast"
+FFMPEG_CRF = 24
+
 DEFAULT_SCENE_SECONDS = 4.0
 MIN_SCENE_SECONDS = 2.5
 MAX_SCENE_SECONDS = 5.5
