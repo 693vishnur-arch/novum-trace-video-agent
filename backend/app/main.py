@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import shutil
 import traceback
 from pathlib import Path
+from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
@@ -14,9 +16,21 @@ from backend.app.services.media import probe_duration
 from backend.app.services.metadata import build_metadata
 from backend.app.services.planner import derive_ending, derive_hook, plan_scenes
 from backend.app.services.renderer import cleanup_work, render_video
+from backend.app.services.stock import (
+    StockProviderError,
+    api_status as stock_api_status,
+    build_review_queries,
+    build_search_query,
+    credit_record,
+    download_candidate,
+    get_candidate,
+    normalize_providers,
+    search_stock,
+    write_credits,
+)
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
-app = FastAPI(title="Novum Trace Video Agent", version="1.0.0")
+app = FastAPI(title="Novum Trace Video Agent", version="1.2.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -35,6 +49,139 @@ def save_upload(upload: UploadFile, destination: Path) -> None:
         shutil.copyfileobj(upload.file, handle)
 
 
+def _parse_stock_selections(raw: str) -> dict[int, dict[str, str]]:
+    if not raw.strip():
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid stock selection data") from exc
+
+    if not isinstance(payload, list):
+        raise ValueError("Stock selections must be a list")
+
+    selections: dict[int, dict[str, str]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            scene_index = int(item.get("scene_index"))
+        except (TypeError, ValueError):
+            continue
+        provider = str(item.get("provider") or "").strip().lower()
+        video_id = str(item.get("id") or "").strip()
+        query = str(item.get("query") or "").strip()
+        if provider in {"pexels", "pixabay"} and video_id:
+            selections[scene_index] = {
+                "provider": provider,
+                "id": video_id,
+                "query": query,
+            }
+    return selections
+
+
+def _download_stock_for_scenes(
+    *,
+    project_dir: Path,
+    scenes: list[Any],
+    visual_paths: list[Path],
+    title: str,
+    prompt: str,
+    visual_source: str,
+    providers: str,
+    max_clips: int,
+    selections_raw: str,
+    prefer_portrait: bool,
+) -> tuple[list[Path], list[dict[str, Any]]]:
+    """Attach stock clips to scenes while keeping strict download limits."""
+    if visual_source not in {"stock_auto", "stock_mix"}:
+        return visual_paths, []
+
+    status = stock_api_status()
+    requested = normalize_providers(providers)
+    available = [provider for provider in requested if status.get(provider)]
+    if not available:
+        raise StockProviderError(
+            "No stock API key is configured. Add PEXELS_API_KEY and/or PIXABAY_API_KEY in Render."
+        )
+
+    max_clips = min(max(int(max_clips or 1), 1), 8)
+    selections = _parse_stock_selections(selections_raw)
+    upload_dir = project_dir / "uploads"
+    credits: list[dict[str, Any]] = []
+    used_ids: set[tuple[str, str]] = set()
+    stock_paths: list[Path] = []
+
+    # In mixed mode, use each uploaded clip once first, then let stock fill the
+    # remaining scenes. This avoids blindly cycling one user clip across the Short.
+    if visual_source == "stock_mix" and visual_paths:
+        for scene, uploaded in zip(scenes, visual_paths):
+            scene.clip_name = uploaded.name
+
+    stock_start_index = len(visual_paths) if visual_source == "stock_mix" else 0
+
+    for scene in scenes:
+        if scene.index < stock_start_index and scene.clip_name:
+            continue
+        if len(stock_paths) >= max_clips:
+            break
+
+        query = build_search_query(scene.text, fallback=f"{title} {prompt}")
+        candidate: dict[str, Any] | None = None
+
+        selected = selections.get(int(scene.index))
+        if selected:
+            candidate = get_candidate(
+                selected["provider"],
+                selected["id"],
+                query=selected.get("query") or query,
+                prefer_portrait=prefer_portrait,
+            )
+        else:
+            candidates = search_stock(
+                query,
+                providers=available,
+                limit=6,
+                prefer_portrait=prefer_portrait,
+            )
+            for item in candidates:
+                key = (str(item.get("provider")), str(item.get("id")))
+                if key not in used_ids:
+                    candidate = item
+                    break
+
+        if not candidate:
+            continue
+
+        key = (str(candidate.get("provider")), str(candidate.get("id")))
+        used_ids.add(key)
+        destination = upload_dir / (
+            f"stock_{scene.index:02d}_{candidate['provider']}_{candidate['id']}.mp4"
+        )
+        download_candidate(candidate, destination)
+        stock_paths.append(destination)
+        scene.clip_name = destination.name
+        credits.append(credit_record(candidate, scene_index=int(scene.index)))
+
+    all_paths = [*visual_paths, *stock_paths]
+
+    # If the Short has more scenes than the configured stock download cap, reuse
+    # the downloaded stock clips rather than making more network requests.
+    if stock_paths:
+        for scene in scenes:
+            if not scene.clip_name:
+                scene.clip_name = stock_paths[int(scene.index) % len(stock_paths)].name
+    elif visual_paths:
+        for scene in scenes:
+            if not scene.clip_name:
+                scene.clip_name = visual_paths[int(scene.index) % len(visual_paths)].name
+
+    if credits:
+        write_credits(project_dir / "credits.txt", credits)
+
+    return all_paths, credits
+
+
 def process_project(
     project_id: str,
     title: str,
@@ -46,6 +193,11 @@ def process_project(
     visual_paths: list[Path],
     music_path: Path | None,
     max_generations: int,
+    visual_source: str,
+    stock_providers: str,
+    stock_max_clips: int,
+    stock_selections: str,
+    prefer_portrait: bool,
 ) -> None:
     project_dir = DATA_DIR / project_id
     try:
@@ -57,11 +209,14 @@ def process_project(
         if total_duration <= 0.5:
             raise ValueError("Narration file is too short")
 
-        # V1 deliberately never invokes a visual generation provider.
         budget = GenerationBudget(maximum=max(0, max_generations), used=0)
         hook = derive_hook(title, script, hook_text)
         ending = derive_ending(ending_question)
-        scenes = plan_scenes(total_duration, script, visual_paths, hook, ending)
+
+        # When stock search is enabled, scene planning should follow the narration
+        # rather than cycling uploaded filenames before the matching step.
+        planning_clips = visual_paths if visual_source == "upload" else []
+        scenes = plan_scenes(total_duration, script, planning_clips, hook, ending)
 
         state.update({
             "status": "planning",
@@ -79,7 +234,31 @@ def process_project(
         })
         save_state(project_dir, state)
 
-        state.update({"status": "rendering", "progress": 48})
+        credits: list[dict[str, Any]] = []
+        if visual_source in {"stock_auto", "stock_mix"}:
+            state.update({"status": "finding stock clips", "progress": 36})
+            save_state(project_dir, state)
+            visual_paths, credits = _download_stock_for_scenes(
+                project_dir=project_dir,
+                scenes=scenes,
+                visual_paths=visual_paths,
+                title=title,
+                prompt=prompt,
+                visual_source=visual_source,
+                providers=stock_providers,
+                max_clips=stock_max_clips,
+                selections_raw=stock_selections,
+                prefer_portrait=prefer_portrait,
+            )
+
+        state.update({
+            "status": "rendering",
+            "progress": 48,
+            "visual_count": len(visual_paths),
+            "stock_clip_count": len(credits),
+            "stock_credits": credits,
+            "scenes": [scene.to_dict() for scene in scenes],
+        })
         save_state(project_dir, state)
 
         final_path = render_video(
@@ -133,6 +312,55 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/stock/status")
+def stock_status() -> dict[str, Any]:
+    return {
+        "configured": stock_api_status(),
+        "providers": ["pexels", "pixabay"],
+        "max_stock_clips": 8,
+    }
+
+
+@app.post("/api/stock/search")
+def stock_search_preview(
+    title: str = Form(""),
+    script: str = Form(""),
+    stock_providers: str = Form("pexels,pixabay"),
+    stock_max_clips: int = Form(6),
+    prefer_portrait: bool = Form(True),
+) -> dict[str, Any]:
+    queries = build_review_queries(script, title, max_clips=stock_max_clips)
+    results: list[dict[str, Any]] = []
+    configured = stock_api_status()
+
+    if not any(configured.values()):
+        raise HTTPException(
+            status_code=400,
+            detail="No stock API key is configured. Add PEXELS_API_KEY and/or PIXABAY_API_KEY in Render.",
+        )
+
+    for item in queries:
+        try:
+            candidates = search_stock(
+                item["query"],
+                providers=stock_providers,
+                limit=6,
+                prefer_portrait=prefer_portrait,
+            )[:3]
+            results.append({**item, "candidates": candidates, "error": None})
+        except StockProviderError as exc:
+            results.append({**item, "candidates": [], "error": str(exc)})
+
+    return {
+        "configured": configured,
+        "results": results,
+        "attribution": {
+            "pexels": "https://www.pexels.com/",
+            "pixabay": "https://pixabay.com/",
+        },
+    }
+
+
 @app.post("/api/projects")
 def create_project(
     background_tasks: BackgroundTasks,
@@ -142,10 +370,18 @@ def create_project(
     hook_text: str = Form(""),
     ending_question: str = Form("WHAT HAPPENS NEXT?"),
     max_generations: int = Form(0),
+    visual_source: str = Form("upload"),
+    stock_providers: str = Form("pexels,pixabay"),
+    stock_max_clips: int = Form(6),
+    stock_selections: str = Form(""),
+    prefer_portrait: bool = Form(True),
     narration: UploadFile = File(...),
     clips: list[UploadFile] = File(default=[]),
     music: UploadFile | None = File(default=None),
 ) -> dict[str, object]:
+    if visual_source not in {"upload", "stock_auto", "stock_mix"}:
+        raise HTTPException(status_code=400, detail="Invalid visual source")
+
     project_id, project_dir = create_project_dir()
     upload_dir = project_dir / "uploads"
 
@@ -161,7 +397,6 @@ def create_project(
         path = upload_dir / clip_name
         if not allowed(path, ALLOWED_VIDEO | ALLOWED_IMAGE):
             raise HTTPException(status_code=400, detail=f"Unsupported visual format: {clip_name}")
-        # Avoid accidental overwrite when users upload repeated filenames.
         if path.exists():
             path = upload_dir / f"{index:02d}_{clip_name}"
         save_upload(clip, path)
@@ -187,6 +422,12 @@ def create_project(
         "updated_at": now_iso(),
         "duration": None,
         "visual_count": len(visual_paths),
+        "visual_source": visual_source,
+        "stock_providers": normalize_providers(stock_providers),
+        "stock_max_clips": min(max(stock_max_clips, 1), 8),
+        "stock_clip_count": 0,
+        "stock_credits": [],
+        "stock_provider_status": stock_api_status(),
         "narration_file": narration_path.name,
         "music_file": music_path.name if music_path else None,
         "generation_budget": {
@@ -213,6 +454,11 @@ def create_project(
         visual_paths,
         music_path,
         max_generations,
+        visual_source,
+        stock_providers,
+        stock_max_clips,
+        stock_selections,
+        prefer_portrait,
     )
     return {"project_id": project_id, "status": "queued"}
 
@@ -246,3 +492,12 @@ def project_download(project_id: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="Rendered video is not ready")
     return FileResponse(path, media_type="application/octet-stream", filename=f"novum_trace_{project_id}.mp4")
+
+
+@app.get("/api/projects/{project_id}/credits")
+def project_credits(project_id: str) -> FileResponse:
+    project_dir = DATA_DIR / project_id
+    path = project_dir / "credits.txt"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No stock credits for this project")
+    return FileResponse(path, media_type="text/plain", filename=f"novum_trace_{project_id}_credits.txt")
