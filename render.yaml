@@ -10,3 +10,8 @@ services:
     healthCheckPath: /health
     autoDeployTrigger: checksPass
     maxShutdownDelaySeconds: 300
+    envVars:
+      - key: PEXELS_API_KEY
+        sync: false
+      - key: PIXABAY_API_KEY
+        sync: false
