@@ -1,61 +1,80 @@
-# Novum Trace Video Agent V1
+# Novum Trace Video Agent V1.2
 
 A self-hosted automatic editor for vertical YouTube Shorts.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/693vishnur-arch/novum-trace-video-agent)
 
+## What V1.2 does
+
 Input:
 - Editing prompt
 - ElevenLabs narration (MP3/WAV/M4A)
-- Multiple video clips and/or images
-- Optional narration script
+- Narration script
+- Optional uploaded video clips/images
 - Optional background music
-- Optional logo
+
+Visual sourcing:
+- Upload your own clips
+- Automatically find free stock video
+- Mix your clips with stock
+- Pexels primary source
+- Pixabay additional/fallback source
+- Portrait-first matching
+- Maximum 8 downloaded stock clips per Short
+- Review three candidate clips per scene before rendering, or let the agent auto-select
 
 Output:
-- 1080x1920 vertical MP4
-- 30 FPS H.264 video + AAC audio
-- Automatically timed scenes
-- Burned-in captions
+- 720x1280 vertical MP4 for the Render free tier
+- 24 FPS H.264 + AAC
+- Dynamic non-truncating captions
 - Opening hook
 - Novum Trace ending card
-- Generated YouTube metadata
+- Narration normalized for mobile/Shorts playback
+- YouTube metadata
+- Stock source/creator credits
 
-The V1 renderer uses FFmpeg for editing. It does not control CapCut and does not consume browser-agent editing credits. AI video generation is intentionally disabled by default. The generation budget is enforced by the backend and cannot be exceeded by the planner.
+The editor uses FFmpeg, not CapCut. Stock search does not consume AI video-generation credits.
 
-## Features
+## Stock provider setup
 
-- FastAPI web application
-- Drag-and-drop uploads
-- Automatic narration duration detection
-- Script-to-scene timing
-- Deterministic fallback planning when no AI API is configured
-- Automatic center crop/scale to 9:16
-- Images and video clips can be mixed
-- Clip reuse if there are fewer visuals than scenes
-- ASS subtitle rendering
-- Optional background music mixing
-- Project history and render status
-- Generation budget tracking
-- Docker deployment
-- Render Blueprint deployment
+V1.2 supports the official Pexels and Pixabay video APIs.
+
+Add these environment variables to your deployment:
+
+```text
+PEXELS_API_KEY=your_key_here
+PIXABAY_API_KEY=your_key_here
+```
+
+You may configure one provider or both. API keys are read only from environment variables and are never stored in project files or returned to the browser.
+
+The agent:
+1. Breaks the narration into visual scenes.
+2. Converts each scene into a stock-friendly search query.
+3. Searches configured providers.
+4. Prefers portrait/HD clips with suitable durations.
+5. Downloads only selected clips to the current project.
+6. Reuses downloaded footage if the Short has more scenes than the configured download cap.
+7. Stores source URLs and contributor names in `credits.txt`.
+
+Pexels attribution is surfaced in the UI and project credits. Pixabay sources are also retained.
 
 ## Quick start
 
 Requirements:
 - Python 3.11+
-- FFmpeg and ffprobe available on PATH
+- FFmpeg and ffprobe on PATH
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+export PEXELS_API_KEY="..."
+export PIXABAY_API_KEY="..."
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Open:
-
-`http://localhost:8000`
+Open `http://localhost:8000`.
 
 ## Docker
 
@@ -63,63 +82,57 @@ Open:
 docker compose up --build
 ```
 
-Then open `http://localhost:8000`.
-
 ## Render
 
-The repository includes a root-level `render.yaml` Blueprint configured for:
+The root-level `render.yaml` configures:
 - Docker runtime
 - Singapore region
 - `/health` health checks
-- deployment after GitHub CI passes
-- Free compute for the first test deployment
+- deploy after GitHub CI passes
+- free compute for testing
+- secret placeholders for Pexels and Pixabay API keys
 
-Free Render services are suitable for testing, but their local filesystem is ephemeral. Uploads, project history, and finished videos can be lost after a restart, redeploy, or idle spin-down. For regular use, upgrade the compute plan and attach a persistent disk at `/app/data`.
+The free Render filesystem is ephemeral. Project history, downloaded stock, and output videos can disappear after a restart/redeploy/spin-down. Download completed MP4s promptly. For regular use, move to paid compute with persistent storage.
 
 ## Typical workflow
 
-1. Enter a project title and an editing prompt.
-2. Upload the ElevenLabs narration.
-3. Paste the narration script when available.
-4. Upload 5-12 video clips or images.
-5. Keep AI generation disabled and max generations at 0 for zero generation-credit usage.
-6. Click Create Short.
-7. Wait for rendering to complete.
-8. Preview and download the MP4.
+1. Enter project title and editing prompt.
+2. Paste the narration script.
+3. Upload the ElevenLabs narration.
+4. Choose **Find free stock automatically**.
+5. Choose Pexels + Pixabay.
+6. Keep maximum stock clips around 6-8.
+7. Optionally click **Find Matching Clips** to review candidates.
+8. Click **Create Short**.
+9. Preview and download the MP4.
+10. Download the stock credits file if stock media was used.
 
-## Generation budget
+## Safety limits
 
-V1 never generates visual clips. It records the requested maximum but always uses zero generations. This is deliberate: the editor must never burn through external video-generation credits unexpectedly.
+- AI video generation remains OFF in V1.2.
+- Stock clips are capped at 8 per project.
+- Individual stock downloads are capped at 60 MB.
+- Pixabay searches use SafeSearch.
+- Only HTTPS provider URLs are downloaded.
+- API keys never appear in client responses.
 
-Future providers can be added behind the `GenerationBudget` interface. Any provider must call `consume()` before generation. Once the configured limit is reached, the renderer must reuse uploaded footage instead.
+## Tests
 
-## Project data
+```bash
+PYTHONPATH=. python -m pytest -q
+```
 
-Runtime uploads and renders are written under `data/projects/` and are ignored by Git.
-
-Each project stores:
-- `project.json`
-- uploaded media
-- generated scene clips
-- `captions.ass`
-- `final.mp4`
-
-## Notes
-
-- Supplying the narration script gives the best captions.
-- Without a script, V1 can still build the video but omits speech captions unless an optional transcription integration is added.
-- The renderer uses center cropping, not CapCut Auto Reframe.
-- V1 has no dependency on CapCut Pro features.
+GitHub Actions runs compile and test checks on every push.
 
 ## Roadmap
 
-- Optional Whisper transcription
-- OpenAI scene-planning adapter
+- Whisper transcription when no script is supplied
+- semantic/embedding-based stock ranking
 - ElevenLabs API integration
-- Optional image/video generation providers with hard spend limits
+- optional AI video-generation providers behind hard spend limits
 - YouTube OAuth upload
-- Smart visual matching using embeddings
-- Automatic safe-zone caption positioning
+- persistent object storage
+- 1080x1920 production render profile
 
 ## License
 
