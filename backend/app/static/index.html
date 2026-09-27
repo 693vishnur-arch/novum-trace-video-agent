@@ -12,9 +12,9 @@
       <div>
         <div class="eyebrow">NOVUM TRACE</div>
         <h1>Video Agent</h1>
-        <p>Prompt + narration + clips -> finished 9:16 YouTube Short.</p>
+        <p>Narration + script -> matched stock clips -> finished 9:16 YouTube Short.</p>
       </div>
-      <div class="pill"><span class="dot"></span> V1.1 captions + normalized audio</div>
+      <div class="pill"><span class="dot"></span> V1.2 free stock matching</div>
     </header>
 
     <main class="grid">
@@ -22,10 +22,10 @@
         <div class="panel-heading">
           <div>
             <h2>Create Short</h2>
-            <p>Editing is local. AI video generation stays off.</p>
+            <p>FFmpeg editing stays local. AI video generation stays off.</p>
           </div>
           <div class="budget-card">
-            <span>Generation budget</span>
+            <span>AI generation budget</span>
             <strong>0 used</strong>
           </div>
         </div>
@@ -34,12 +34,12 @@
           <div class="field-row two">
             <label>
               <span>Project title</span>
-              <input id="title" name="title" required placeholder="OpenAI Agent Government Incident" />
+              <input id="title" name="title" required placeholder="OpenAI Agent Internet Sandbox" />
             </label>
             <label>
               <span>Max AI generations</span>
               <input id="max_generations" name="max_generations" type="number" min="0" max="20" value="0" />
-              <small>V1 never spends these credits.</small>
+              <small>Stock search does not count as AI generation.</small>
             </label>
           </div>
 
@@ -51,7 +51,7 @@
           <div class="field-row two">
             <label>
               <span>Opening hook</span>
-              <input id="hook_text" name="hook_text" placeholder="AN AI AGENT BROKE IN" />
+              <input id="hook_text" name="hook_text" placeholder="THE AI FOUND A WAY ONLINE" />
             </label>
             <label>
               <span>Ending question</span>
@@ -61,8 +61,71 @@
 
           <label>
             <span>Narration script</span>
-            <textarea id="script" name="script" rows="7" placeholder="Paste the ElevenLabs narration script for the best scene timing and captions."></textarea>
+            <textarea id="script" name="script" rows="7" placeholder="Paste the ElevenLabs narration script. The stock matcher uses this text to search for each scene."></textarea>
           </label>
+
+          <section class="stock-box">
+            <div class="stock-heading">
+              <div>
+                <span class="section-kicker">VISUAL SOURCE</span>
+                <h3>Free stock matching</h3>
+              </div>
+              <div id="stockStatus" class="provider-status">Checking API keys...</div>
+            </div>
+
+            <div class="field-row two">
+              <label>
+                <span>Visual source</span>
+                <select id="visual_source" name="visual_source">
+                  <option value="stock_auto" selected>Find free stock automatically</option>
+                  <option value="stock_mix">Stock + my uploaded clips</option>
+                  <option value="upload">Upload my own clips only</option>
+                </select>
+              </label>
+              <label>
+                <span>Stock selection</span>
+                <select id="stock_selection_mode">
+                  <option value="auto" selected>Automatic - choose best match</option>
+                  <option value="review">Review candidates first</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="field-row three">
+              <label>
+                <span>Providers</span>
+                <select id="stock_providers" name="stock_providers">
+                  <option value="pexels,pixabay" selected>Pexels + Pixabay</option>
+                  <option value="pexels">Pexels only</option>
+                  <option value="pixabay">Pixabay only</option>
+                </select>
+              </label>
+              <label>
+                <span>Maximum stock clips</span>
+                <input id="stock_max_clips" name="stock_max_clips" type="number" min="1" max="8" value="6" />
+              </label>
+              <label class="check-label">
+                <span>Framing</span>
+                <span class="check-row">
+                  <input id="prefer_portrait" name="prefer_portrait" type="checkbox" value="true" checked />
+                  <span>Prefer portrait</span>
+                </span>
+              </label>
+            </div>
+
+            <input id="stock_selections" name="stock_selections" type="hidden" value="" />
+
+            <button id="findStockButton" class="secondary wide" type="button">Find Matching Clips</button>
+            <div class="stock-links">
+              Search powered by
+              <a href="https://www.pexels.com/" target="_blank" rel="noopener">Pexels</a>
+              and
+              <a href="https://pixabay.com/" target="_blank" rel="noopener">Pixabay</a>.
+              Selected media is downloaded to the project before rendering.
+            </div>
+            <div id="stockSearchError" class="error hidden"></div>
+            <div id="stockCandidates" class="candidate-list hidden"></div>
+          </section>
 
           <div class="upload-grid">
             <label class="upload-card">
@@ -73,10 +136,10 @@
               <span id="narrationName" class="file-name">Choose audio</span>
             </label>
 
-            <label class="upload-card">
+            <label class="upload-card" id="clipUploadCard">
               <span class="upload-icon">V</span>
-              <strong>Visual clips</strong>
-              <small>MP4, MOV, JPG, PNG - multiple</small>
+              <strong>My visual clips</strong>
+              <small>Optional with stock search</small>
               <input id="clips" name="clips" type="file" accept="video/*,image/*" multiple />
               <span id="clipsName" class="file-name">Choose clips</span>
             </label>
@@ -113,7 +176,7 @@
         <div id="emptyState" class="empty-state">
           <div class="empty-art">NT</div>
           <h3>Ready for a project</h3>
-          <p>Upload narration and visuals, then create the Short.</p>
+          <p>Upload narration, paste the script, and let the agent find visuals.</p>
         </div>
 
         <div id="activeState" class="hidden">
@@ -123,9 +186,10 @@
           </div>
           <div class="progress-track"><div id="progressBar"></div></div>
 
-          <div class="metrics">
+          <div class="metrics four">
             <div><span>Duration</span><strong id="durationValue">-</strong></div>
             <div><span>Scenes</span><strong id="scenesValue">-</strong></div>
+            <div><span>Stock clips</span><strong id="stockValue">0</strong></div>
             <div><span>AI clips</span><strong id="generationValue">0</strong></div>
           </div>
 
@@ -135,6 +199,12 @@
             <a id="downloadLink" class="primary link-button" href="#">Download MP4</a>
             <button id="copyTitle" class="secondary" type="button">Copy title</button>
             <button id="copyDescription" class="secondary" type="button">Copy description</button>
+            <a id="creditsLink" class="secondary link-button hidden" href="#">Download stock credits</a>
+          </div>
+
+          <div id="creditsBox" class="metadata hidden">
+            <span>Stock sources</span>
+            <div id="creditsList"></div>
           </div>
 
           <div id="metadataBox" class="metadata hidden">
