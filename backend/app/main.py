@@ -30,7 +30,7 @@ from backend.app.services.stock import (
 )
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
-app = FastAPI(title="Novum Trace Video Agent", version="1.2.0")
+app = FastAPI(title="Novum Trace Video Agent", version="1.3.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -326,7 +326,7 @@ def stock_search_preview(
     title: str = Form(""),
     script: str = Form(""),
     stock_providers: str = Form("pexels,pixabay"),
-    stock_max_clips: int = Form(6),
+    stock_max_clips: int = Form(8),
     prefer_portrait: bool = Form(True),
 ) -> dict[str, Any]:
     queries = build_review_queries(script, title, max_clips=stock_max_clips)
@@ -372,7 +372,7 @@ def create_project(
     max_generations: int = Form(0),
     visual_source: str = Form("upload"),
     stock_providers: str = Form("pexels,pixabay"),
-    stock_max_clips: int = Form(6),
+    stock_max_clips: int = Form(8),
     stock_selections: str = Form(""),
     prefer_portrait: bool = Form(True),
     narration: UploadFile = File(...),
