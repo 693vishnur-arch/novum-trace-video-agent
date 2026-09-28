@@ -28,3 +28,21 @@ def test_voice_filter_rebuilds_output_audio_pts():
     assert "loudnorm=I=-16:TP=-1.5:LRA=11" in renderer.VOICE_FILTER
     assert "aresample=48000" in renderer.VOICE_FILTER
     assert "asetpts=N/SR/TB" in renderer.VOICE_FILTER
+
+
+import pytest
+
+
+@pytest.mark.parametrize("with_music", [False, True])
+def test_final_render_uses_clean_narration(monkeypatch, tmp_path, with_music):
+    commands = []
+    monkeypatch.setattr(renderer, "run", lambda cmd: commands.append(cmd))
+    source = tmp_path / "voice.mp3"
+    renderer.render_video(
+        tmp_path, [], [], source, 4.0, "Hook", "Question?",
+        music_path=tmp_path / "music.mp3" if with_music else None,
+    )
+    final = commands[-1]
+    inputs = [final[i + 1] for i, arg in enumerate(final) if arg == "-i"]
+    assert str(tmp_path / "work" / "narration_clean.wav") in inputs
+    assert str(source) not in inputs

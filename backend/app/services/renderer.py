@@ -174,7 +174,7 @@ def render_video(
         )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(concat_video), "-i", str(narration_path),
+            "-i", str(concat_video), "-i", str(narration_clean),
             "-filter_complex", filter_complex,
             "-map", "[v]", "-map", "[a]",
             "-t", f"{total_duration:.3f}",
