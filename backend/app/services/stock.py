@@ -134,7 +134,7 @@ def _json_request(url: str, *, headers: dict[str, str] | None = None, timeout: i
 def _tokenize(text: str) -> list[str]:
     return [
         token.lower()
-        for token in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", text)
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", text.replace("-", " ").replace("_", " "))
         if token.lower() not in STOPWORDS
     ]
 
@@ -147,10 +147,11 @@ def _visual_theme(text: str, fallback: str = "") -> str:
     combined = re.sub(r"\s+", " ", f"{text} {fallback}".strip()).lower()
     if _contains_any(combined, SPACE_TERMS):
         return "space"
-    if _contains_any(combined, CYBER_TERMS):
-        return "cyber"
+    # Explicit AI-agent language wins over generic network/DNS words.
     if _contains_any(combined, AI_TERMS):
         return "ai"
+    if _contains_any(combined, CYBER_TERMS):
+        return "cyber"
     if _contains_any(combined, MEDICAL_TERMS):
         return "medical"
     if _contains_any(combined, ROBOT_TERMS):
