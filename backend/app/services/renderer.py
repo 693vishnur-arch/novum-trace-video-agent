@@ -16,7 +16,7 @@ from backend.app.models import Scene
 from backend.app.services.captions import build_ass
 from backend.app.services.media import is_image, is_video, run
 
-VOICE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+VOICE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB"
 
 
 def _video_filter() -> str:
@@ -74,6 +74,28 @@ def _render_scene(source: Path | None, output: Path, duration: float) -> None:
     run(cmd)
 
 
+def _prepare_narration(source: Path, work_dir: Path) -> Path:
+    """Decode narration to a continuous PCM timeline before the final mux.
+
+    Some MP3/M4A files carry packet timestamps or encoder delay metadata that can
+    produce gaps after filtering/muxing. Rebuilding timestamps from decoded sample
+    count makes the voice track continuous and deterministic.
+    """
+    output = work_dir / "narration_clean.wav"
+    run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-fflags", "+genpts",
+        "-i", str(source),
+        "-vn",
+        "-af", "aresample=48000:async=0:first_pts=0,asetpts=N/SR/TB",
+        "-ar", "48000",
+        "-ac", "2",
+        "-c:a", "pcm_s16le",
+        str(output),
+    ])
+    return output
+
+
 def _concat_scenes(scene_files: list[Path], output: Path, work_dir: Path) -> None:
     concat_file = work_dir / "concat.txt"
     lines = []
@@ -118,6 +140,8 @@ def render_video(
     captions = project_dir / "captions.ass"
     build_ass(scenes, captions, hook, ending_question, total_duration)
 
+    narration_clean = _prepare_narration(narration_path, work_dir)
+
     final_path = project_dir / "final.mp4"
     ass_path = str(captions).replace("\\", "/").replace(":", r"\:")
 
@@ -126,14 +150,14 @@ def render_video(
         filter_complex = (
             f"[0:v]ass='{ass_path}'[v];"
             f"[1:a]{VOICE_FILTER}[voice];"
-            f"[2:a]volume={music_volume:.3f},atrim=0:{total_duration:.3f},"
+            f"[2:a]aresample=48000,asetpts=N/SR/TB,volume={music_volume:.3f},atrim=0:{total_duration:.3f},"
             f"afade=t=in:st=0:d=0.5,afade=t=out:st={fade_out_start:.3f}:d=1[m];"
             "[voice][m]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,"
             "alimiter=limit=0.95[a]"
         )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(concat_video), "-i", str(narration_path),
+            "-i", str(concat_video), "-i", str(narration_clean),
             "-stream_loop", "-1", "-i", str(music_path),
             "-filter_complex", filter_complex,
             "-map", "[v]", "-map", "[a]",
