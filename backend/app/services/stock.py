@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 PEXELS_API = "https://api.pexels.com/v1/videos"
 PIXABAY_API = "https://pixabay.com/api/videos/"
-USER_AGENT = "NovumTraceVideoAgent/1.2"
+USER_AGENT = "NovumTraceVideoAgent/1.3"
 MAX_DOWNLOAD_BYTES = 60 * 1024 * 1024
 DEFAULT_RESULTS_PER_PROVIDER = 6
 
@@ -31,15 +31,54 @@ STOPWORDS = {
 
 CONCEPT_RULES: list[tuple[tuple[str, ...], str]] = [
     (("server", "servers", "data center", "datacenter"), "server room data center"),
-    (("cyber", "cybersecurity", "hacker", "attack", "malware", "threat"), "cybersecurity hacker computer"),
-    (("dns", "network", "internet", "online"), "computer network data center"),
-    (("ai agent", "artificial intelligence", "openai", "chatbot", "model"), "artificial intelligence computer technology"),
-    (("medical", "medicare", "hospital", "health"), "medical technology data"),
+    (("cyber", "cybersecurity", "hacker", "attack", "malware", "threat"), "cybersecurity computer security"),
+    (("dns", "network", "internet", "online"), "computer network technology"),
+    (("ai agent", "artificial intelligence", "openai", "chatbot", "model"), "artificial intelligence computer"),
+    (("medical", "medicare", "hospital", "health"), "medical technology hospital"),
     (("government", "federal", "authority"), "government technology security"),
     (("file", "files", "transfer", "data"), "secure data transfer computer"),
-    (("space", "nasa", "rocket", "satellite"), "space technology satellite"),
+    (("space", "spacex", "starship", "starbase", "starlink", "nasa", "rocket", "satellite"), "rocket spacecraft space"),
     (("robot", "robotics"), "robot artificial intelligence"),
 ]
+
+SPACE_TERMS = (
+    "space", "spacex", "starship", "starbase", "starlink", "nasa", "rocket",
+    "satellite", "orbit", "orbital", "spacecraft", "reentry",
+)
+CYBER_TERMS = (
+    "cyber", "cybersecurity", "hacker", "malware", "ransomware", "server",
+    "dns", "network attack", "zero-day", "security warning",
+)
+AI_TERMS = ("ai agent", "artificial intelligence", "openai", "chatbot", "language model")
+MEDICAL_TERMS = ("medical", "hospital", "health", "doctor", "patient", "medicare")
+ROBOT_TERMS = ("robot", "robotics", "humanoid")
+
+THEME_POSITIVE_TERMS: dict[str, set[str]] = {
+    "space": {
+        "rocket", "space", "spacecraft", "satellite", "orbit", "orbital", "launch",
+        "astronaut", "earth", "moon", "mars", "engine", "reentry",
+    },
+    "cyber": {
+        "cyber", "cybersecurity", "computer", "server", "network", "hacker",
+        "security", "data", "code", "malware",
+    },
+    "ai": {
+        "ai", "artificial", "intelligence", "computer", "robot", "technology",
+        "digital", "chatbot", "data",
+    },
+}
+
+THEME_NEGATIVE_TERMS: dict[str, set[str]] = {
+    "space": {
+        "football", "soccer", "basketball", "stadium", "tennis", "airplane", "aeroplane",
+        "aircraft", "airport", "kitchen", "cooking", "wedding", "fashion", "restaurant",
+        "food", "train", "bus", "motorcycle",
+    },
+    "cyber": {
+        "football", "soccer", "basketball", "stadium", "kitchen", "cooking", "wedding",
+        "fashion", "restaurant", "food", "beach", "forest",
+    },
+}
 
 
 class StockProviderError(RuntimeError):
@@ -100,35 +139,87 @@ def _tokenize(text: str) -> list[str]:
     ]
 
 
-def build_search_query(text: str, fallback: str = "") -> str:
-    """Turn narration text into a stock-friendly visual query.
+def _contains_any(source: str, terms: Iterable[str]) -> bool:
+    return any(term in source for term in terms)
 
-    Search libraries work better with visual concepts such as "server room" than
-    with complete news sentences. Domain concept rules take priority, then a
-    compact keyword query is used.
+
+def _visual_theme(text: str, fallback: str = "") -> str:
+    combined = re.sub(r"\s+", " ", f"{text} {fallback}".strip()).lower()
+    if _contains_any(combined, SPACE_TERMS):
+        return "space"
+    if _contains_any(combined, CYBER_TERMS):
+        return "cyber"
+    if _contains_any(combined, AI_TERMS):
+        return "ai"
+    if _contains_any(combined, MEDICAL_TERMS):
+        return "medical"
+    if _contains_any(combined, ROBOT_TERMS):
+        return "robotics"
+    return ""
+
+
+def build_search_query(text: str, fallback: str = "") -> str:
+    """Turn narration into a concrete visual-search phrase.
+
+    V1.3 keeps the overall story theme from the title/prompt even when an
+    individual sentence is vague. Scene-specific cues then choose a visual
+    concept. This prevents literal searches such as "today" or "Texas" from
+    overpowering the actual subject of the Short.
     """
-    source = re.sub(r"\s+", " ", (text or fallback).strip()).lower()
+    scene = re.sub(r"\s+", " ", text.strip()).lower()
+    context = re.sub(r"\s+", " ", fallback.strip()).lower()
+    source = scene or context
     if not source:
         return "technology data center"
 
-    matched: list[str] = []
+    theme = _visual_theme(scene, context)
+
+    if theme == "space":
+        if _contains_any(scene, ("satellite", "starlink", "deploy", "deployment")):
+            return "satellite orbit earth"
+        if _contains_any(scene, ("reentry", "re-entry", "atmosphere", "returning", "returned", "returns")):
+            return "spacecraft reentry earth"
+        if _contains_any(scene, ("orbit", "orbital", "suborbital")):
+            return "spacecraft earth orbit"
+        if _contains_any(scene, ("engine", "engines", "booster", "thrust")):
+            return "rocket engine launch"
+        if _contains_any(scene, ("launch", "launches", "launching", "launch pad", "starbase", "pad", "texas")):
+            return "rocket launch pad"
+        if _contains_any(scene, ("test flight", "flight", "trajectory")):
+            return "rocket test flight"
+        return "rocket spacecraft space"
+
+    if theme == "cyber":
+        if _contains_any(scene, ("server", "servers", "shutdown", "shut down", "data center")):
+            return "server room data center"
+        if _contains_any(scene, ("dns", "network", "internet", "online")):
+            return "computer network cybersecurity"
+        if _contains_any(scene, ("file", "files", "transfer")):
+            return "secure data transfer computer"
+        if _contains_any(scene, ("attack", "hacker", "malware", "threat", "warning", "alert")):
+            return "cybersecurity security alert"
+        return "cybersecurity computer security"
+
+    if theme == "ai":
+        if _contains_any(scene, ("internet", "dns", "network", "online")):
+            return "artificial intelligence computer network"
+        if _contains_any(scene, ("chatbot", "assistant")):
+            return "ai chatbot computer"
+        if _contains_any(scene, ("robot", "robotics")):
+            return "ai robot technology"
+        return "artificial intelligence computer"
+
+    if theme == "medical":
+        return "medical technology hospital"
+    if theme == "robotics":
+        return "robot artificial intelligence"
+
+    combined_source = f"{scene} {context}".strip()
     for triggers, query in CONCEPT_RULES:
-        if any(trigger in source for trigger in triggers):
-            if query not in matched:
-                matched.append(query)
-        if len(matched) >= 2:
-            break
+        if any(trigger in combined_source for trigger in triggers):
+            return query
 
-    if matched:
-        # Blend two concepts when useful, but cap the query length.
-        combined = " ".join(matched)
-        words: list[str] = []
-        for word in combined.split():
-            if word not in words:
-                words.append(word)
-        return " ".join(words[:6])
-
-    tokens = _tokenize(source)
+    tokens = _tokenize(scene or context)
     unique: list[str] = []
     for token in tokens:
         if token not in unique:
@@ -151,8 +242,16 @@ def build_review_queries(script: str, title: str, max_clips: int = 6) -> list[di
     if len(sentences) <= max_clips:
         groups = sentences
     else:
-        per = math.ceil(len(sentences) / max_clips)
-        groups = [" ".join(sentences[i:i + per]) for i in range(0, len(sentences), per)]
+        # Distribute sentences across exactly max_clips contiguous buckets.
+        # The old ceil-based grouping could collapse 9 sentences into only
+        # 5 review scenes when the requested cap was 8.
+        groups = []
+        total = len(sentences)
+        for bucket in range(max_clips):
+            start = math.floor(bucket * total / max_clips)
+            end = math.floor((bucket + 1) * total / max_clips)
+            if end > start:
+                groups.append(" ".join(sentences[start:end]))
 
     return [
         {
@@ -214,6 +313,7 @@ def _pexels_candidate(video: dict[str, Any], query: str, prefer_portrait: bool =
         "creator": str(user.get("name") or "Pexels contributor"),
         "creator_url": str(user.get("url") or ""),
         "portrait": height >= width,
+        "metadata_text": str(video.get("url") or ""),
     }
 
 
@@ -222,13 +322,14 @@ def search_pexels(query: str, *, limit: int = DEFAULT_RESULTS_PER_PROVIDER, pref
     if not key:
         return []
 
+    # Relevance comes before framing. Hard-filtering Pexels to portrait can
+    # remove the best rocket/server footage and leave unrelated vertical clips.
+    # We search broadly, then score portrait as a preference.
     params = {
         "query": query,
-        "per_page": str(min(max(limit, 3), 20)),
+        "per_page": str(min(max(limit * 3, 12), 40)),
         "size": "medium",
     }
-    if prefer_portrait:
-        params["orientation"] = "portrait"
 
     url = f"{PEXELS_API}/search?{urllib.parse.urlencode(params)}"
     data = _json_request(url, headers={"Authorization": key})
@@ -288,6 +389,7 @@ def _pixabay_candidate(hit: dict[str, Any], query: str, prefer_portrait: bool = 
         "portrait": height >= width,
         "views": int(hit.get("views") or 0),
         "likes": int(hit.get("likes") or 0),
+        "metadata_text": f"{hit.get('tags') or ''} {hit.get('pageURL') or ''}".strip(),
     }
 
 
@@ -302,7 +404,7 @@ def search_pixabay(query: str, *, limit: int = DEFAULT_RESULTS_PER_PROVIDER, pre
         "video_type": "all",
         "safesearch": "true",
         "order": "popular",
-        "per_page": str(min(max(limit, 3), 20)),
+        "per_page": str(min(max(limit * 3, 12), 40)),
     }
     data = _json_request(f"{PIXABAY_API}?{urllib.parse.urlencode(params)}")
     result: list[dict[str, Any]] = []
@@ -313,22 +415,56 @@ def search_pixabay(query: str, *, limit: int = DEFAULT_RESULTS_PER_PROVIDER, pre
     return result
 
 
-def _score_candidate(candidate: dict[str, Any], prefer_portrait: bool = True) -> float:
+def _candidate_metadata_tokens(candidate: dict[str, Any]) -> set[str]:
+    return set(_tokenize(str(candidate.get("metadata_text") or "")))
+
+
+def _is_obvious_mismatch(candidate: dict[str, Any], query: str) -> bool:
+    theme = _visual_theme(query)
+    negatives = THEME_NEGATIVE_TERMS.get(theme)
+    if not negatives:
+        return False
+    metadata_tokens = _candidate_metadata_tokens(candidate)
+    return bool(metadata_tokens & negatives)
+
+
+def _score_candidate(
+    candidate: dict[str, Any],
+    query: str,
+    prefer_portrait: bool = True,
+) -> float:
     width = int(candidate.get("width") or 0)
     height = int(candidate.get("height") or 0)
     duration = float(candidate.get("duration") or 0)
     score = 0.0
+
+    # Relevance must outweigh orientation. A relevant landscape rocket clip is
+    # better than an unrelated portrait football/airplane clip.
+    query_tokens = set(_tokenize(query))
+    metadata_tokens = _candidate_metadata_tokens(candidate)
+    overlap = query_tokens & metadata_tokens
+    score += min(len(overlap) * 16.0, 48.0)
+
+    theme = _visual_theme(query)
+    positives = THEME_POSITIVE_TERMS.get(theme, set())
+    positive_hits = metadata_tokens & positives
+    score += min(len(positive_hits) * 8.0, 24.0)
+
+    negatives = THEME_NEGATIVE_TERMS.get(theme, set())
+    if metadata_tokens & negatives:
+        score -= 100.0
+
     if prefer_portrait and height >= width:
-        score += 30
+        score += 16
     if min(width, height) >= 720:
-        score += 18
+        score += 12
     elif min(width, height) >= 540:
-        score += 8
+        score += 6
     if 3 <= duration <= 20:
-        score += 10
+        score += 8
     elif duration > 0:
-        score += 3
-    score += min(float(candidate.get("likes") or 0) / 200.0, 8.0)
+        score += 2
+    score += min(float(candidate.get("likes") or 0) / 250.0, 6.0)
     return score
 
 
@@ -360,7 +496,12 @@ def search_stock(
         if key in seen:
             continue
         seen.add(key)
-        item["score"] = round(_score_candidate(item, prefer_portrait=prefer_portrait), 2)
+        if _is_obvious_mismatch(item, query):
+            continue
+        item["score"] = round(
+            _score_candidate(item, query, prefer_portrait=prefer_portrait),
+            2,
+        )
         unique.append(item)
     unique.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
 
