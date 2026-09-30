@@ -104,9 +104,8 @@ def _worker(request: Path, response: Path) -> None:
     model = WhisperModel(os.getenv("WHISPER_MODEL", "tiny.en"), device="cpu",
                          compute_type="int8", cpu_threads=1, num_workers=1)
     segments, _ = model.transcribe(
-        payload["audio"], word_timestamps=True, beam_size=1,
+        payload["audio"], word_timestamps=True, beam_size=5,
         condition_on_previous_text=False, vad_filter=False,
-        initial_prompt=payload["script"][:1000] or None,
     )
     words = [{"text": word.word.strip(), "start": word.start, "end": word.end}
              for segment in segments for word in (segment.words or [])
