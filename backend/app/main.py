@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import traceback
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -14,8 +15,9 @@ from backend.app.config import ALLOWED_AUDIO, ALLOWED_IMAGE, ALLOWED_VIDEO, DATA
 from backend.app.services.budget import GenerationBudget
 from backend.app.services.media import probe_duration
 from backend.app.services.metadata import build_metadata
-from backend.app.services.planner import derive_ending, derive_hook, plan_scenes
-from backend.app.services.renderer import cleanup_work, render_video
+from backend.app.services.planner import derive_ending, derive_hook, plan_aligned_scenes
+from backend.app.services.renderer import cleanup_work, render_video, _prepare_narration
+from backend.app.services.alignment import align_narration
 from backend.app.services.stock import (
     StockProviderError,
     api_status as stock_api_status,
@@ -30,8 +32,9 @@ from backend.app.services.stock import (
 )
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
-app = FastAPI(title="Novum Trace Video Agent", version="1.3.1")
+app = FastAPI(title="Novum Trace Video Agent", version="1.4.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+_project_lock = threading.Lock()
 
 
 def safe_name(name: str | None, fallback: str) -> str:
@@ -182,7 +185,13 @@ def _download_stock_for_scenes(
     return all_paths, credits
 
 
-def process_project(
+def process_project(*args: Any, **kwargs: Any) -> None:
+    # One inference/render at a time on the memory-limited single-worker server.
+    with _project_lock:
+        _process_project(*args, **kwargs)
+
+
+def _process_project(
     project_id: str,
     title: str,
     prompt: str,
@@ -205,7 +214,10 @@ def process_project(
         state.update({"status": "analyzing", "progress": 12, "error": None})
         save_state(project_dir, state)
 
-        total_duration = probe_duration(narration_path)
+        work_dir = project_dir / "work"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        narration_clean = _prepare_narration(narration_path, work_dir)
+        total_duration = probe_duration(narration_clean)
         if total_duration <= 0.5:
             raise ValueError("Narration file is too short")
 
@@ -216,7 +228,12 @@ def process_project(
         # When stock search is enabled, scene planning should follow the narration
         # rather than cycling uploaded filenames before the matching step.
         planning_clips = visual_paths if visual_source == "upload" else []
-        scenes = plan_scenes(total_duration, script, planning_clips, hook, ending)
+        state.update({"status": "aligning narration", "progress": 18})
+        save_state(project_dir, state)
+        words = align_narration(narration_clean, script, total_duration, work_dir)
+        scene_limit = stock_max_clips if visual_source in {"stock_auto", "stock_mix"} else 8
+        scenes = plan_aligned_scenes(total_duration, words, script, planning_clips, scene_limit)
+        state["timing_method"] = "speech_word_timestamps"
 
         state.update({
             "status": "planning",
@@ -265,11 +282,12 @@ def process_project(
             project_dir=project_dir,
             scenes=scenes,
             visual_paths=visual_paths,
-            narration_path=narration_path,
+            narration_path=narration_clean,
             total_duration=total_duration,
             hook=hook,
             ending_question=ending,
             music_path=music_path,
+            narration_prepared=True,
         )
 
         metadata = build_metadata(title, prompt, script)

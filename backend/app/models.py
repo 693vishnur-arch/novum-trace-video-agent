@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
+
+
+@dataclass
+class WordTiming:
+    text: str
+    start: float
+    end: float
 
 
 @dataclass
@@ -13,6 +20,7 @@ class Scene:
     text: str
     clip_name: str | None = None
     role: str = "body"
+    words: list[WordTiming] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from backend.app.config import DEFAULT_SCENE_SECONDS, MAX_SCENE_SECONDS, MIN_SCENE_SECONDS
-from backend.app.models import Scene
+from backend.app.models import Scene, WordTiming
 
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
@@ -36,6 +36,41 @@ def chunk_script(script: str, target_scenes: int | None = None) -> list[str]:
     for i in range(0, len(sentences), per):
         chunks.append(" ".join(sentences[i : i + per]))
     return chunks
+
+
+def visual_groups(script: str, max_scenes: int) -> list[str]:
+    """The review UI and renderer must use exactly the same scene grouping."""
+    sentences = split_sentences(script)
+    count = min(max(1, max_scenes), len(sentences))
+    if not count:
+        return []
+    return [" ".join(sentences[i * len(sentences) // count:
+                               (i + 1) * len(sentences) // count])
+            for i in range(count)]
+
+
+def plan_aligned_scenes(total_duration: float, words: list[WordTiming],
+                        script: str, clips: list[Path], max_scenes: int = 8) -> list[Scene]:
+    from backend.app.services.alignment import validate_words
+
+    validate_words(words, total_duration)
+    groups = visual_groups(script or " ".join(w.text for w in words), max_scenes)
+    if sum(len(group.split()) for group in groups) != len(words):
+        raise ValueError("Scene script and aligned words differ")
+    scenes: list[Scene] = []
+    offset = 0
+    for index, text in enumerate(groups):
+        count = len(text.split())
+        scene_words = words[offset:offset + count]
+        start = 0.0 if index == 0 else scene_words[0].start
+        offset += count
+        end = words[offset].start if offset < len(words) else total_duration
+        scenes.append(Scene(index=index, start=start, end=end, duration=end - start,
+                            text=text, words=scene_words,
+                            clip_name=clips[index % len(clips)].name if clips else None,
+                            role="hook" if index == 0 else "body"))
+    scenes[-1].role = "ending"
+    return scenes
 
 
 def _weights(chunks: list[str]) -> list[float]:
