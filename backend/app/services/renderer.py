@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import math
 from pathlib import Path
 
 from backend.app.config import (
@@ -37,7 +38,8 @@ def _encode_args() -> list[str]:
 
 
 def _render_scene(source: Path | None, output: Path, duration: float) -> None:
-    duration = max(duration, 0.25)
+    duration = max(duration, 1 / OUTPUT_FPS)
+    frames = max(1, round(duration * OUTPUT_FPS))
     vf = _video_filter()
 
     if source is None:
@@ -45,7 +47,7 @@ def _render_scene(source: Path | None, output: Path, duration: float) -> None:
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-f", "lavfi",
             "-i", f"color=c=0x070b12:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={OUTPUT_FPS}",
-            "-t", f"{duration:.3f}", "-an",
+            "-frames:v", str(frames), "-an",
             *_encode_args(),
             str(output),
         ]
@@ -56,7 +58,7 @@ def _render_scene(source: Path | None, output: Path, duration: float) -> None:
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-loop", "1", "-framerate", str(OUTPUT_FPS), "-i", str(source),
-            "-t", f"{duration:.3f}", "-an", "-vf", vf,
+            "-frames:v", str(frames), "-an", "-vf", vf,
             *_encode_args(),
             str(output),
         ]
@@ -64,7 +66,7 @@ def _render_scene(source: Path | None, output: Path, duration: float) -> None:
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-stream_loop", "-1", "-i", str(source),
-            "-t", f"{duration:.3f}", "-an", "-vf", vf,
+            "-frames:v", str(frames), "-an", "-vf", vf,
             *_encode_args(),
             str(output),
         ]
@@ -121,6 +123,7 @@ def render_video(
     ending_question: str,
     music_path: Path | None = None,
     music_volume: float = DEFAULT_MUSIC_VOLUME,
+    narration_prepared: bool = False,
 ) -> Path:
     work_dir = project_dir / "work"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -128,10 +131,18 @@ def render_video(
     visual_by_name = {p.name: p for p in visual_paths}
     scene_files: list[Path] = []
 
+    frame_cursor = 0
     for scene in scenes:
         scene_file = work_dir / f"scene_{scene.index:03d}.mp4"
         source = visual_by_name.get(scene.clip_name or "")
-        _render_scene(source, scene_file, scene.duration)
+        # Round absolute boundaries, not every clip duration: rounding each
+        # duration independently accumulates visible drift over many scenes.
+        end_frame = (math.ceil(total_duration * OUTPUT_FPS) if scene is scenes[-1]
+                     else round(scene.end * OUTPUT_FPS))
+        if end_frame <= frame_cursor:
+            raise ValueError("Scene is shorter than one output frame")
+        _render_scene(source, scene_file, (end_frame - frame_cursor) / OUTPUT_FPS)
+        frame_cursor = end_frame
         scene_files.append(scene_file)
 
     concat_video = work_dir / "visuals.mp4"
@@ -140,7 +151,7 @@ def render_video(
     captions = project_dir / "captions.ass"
     build_ass(scenes, captions, hook, ending_question, total_duration)
 
-    narration_clean = _prepare_narration(narration_path, work_dir)
+    narration_clean = narration_path if narration_prepared else _prepare_narration(narration_path, work_dir)
 
     final_path = project_dir / "final.mp4"
     ass_path = str(captions).replace("\\", "/").replace(":", r"\:")

@@ -22,3 +22,13 @@ jobs:
         run: python -m compileall backend
       - name: Test
         run: python -m pytest -q
+      - name: Create speech timing fixture
+        run: |
+          sudo apt-get install -y espeak-ng
+          mkdir -p /tmp/alignment-fixture
+          espeak-ng -s 145 -w /tmp/alignment-fixture/speech.wav "The computer is ready. We can start working together. Would you like to begin?"
+          ffmpeg -y -i /tmp/alignment-fixture/speech.wav -af adelay=2000:all=1 /tmp/alignment-fixture/narration.wav
+      - name: Build deployment image with bundled speech model
+        run: docker build -t novum-timing-test .
+      - name: Verify speech alignment and render within 512 MB
+        run: docker run --rm --memory=512m --memory-swap=512m --cpus=1 -v /tmp/alignment-fixture:/fixture:ro novum-timing-test python -m tests.smoke_alignment

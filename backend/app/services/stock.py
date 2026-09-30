@@ -232,28 +232,9 @@ def build_search_query(text: str, fallback: str = "") -> str:
 
 def build_review_queries(script: str, title: str, max_clips: int = 6) -> list[dict[str, Any]]:
     max_clips = min(max(int(max_clips or 1), 1), 8)
-    sentences = [
-        re.sub(r"\s+", " ", part.strip())
-        for part in re.split(r"(?<=[.!?])\s+|\n+", script or "")
-        if part.strip()
-    ]
-    if not sentences:
-        sentences = [title or "technology news"]
+    from backend.app.services.planner import visual_groups
 
-    if len(sentences) <= max_clips:
-        groups = sentences
-    else:
-        # Distribute sentences across exactly max_clips contiguous buckets.
-        # The old ceil-based grouping could collapse 9 sentences into only
-        # 5 review scenes when the requested cap was 8.
-        groups = []
-        total = len(sentences)
-        for bucket in range(max_clips):
-            start = math.floor(bucket * total / max_clips)
-            end = math.floor((bucket + 1) * total / max_clips)
-            if end > start:
-                groups.append(" ".join(sentences[start:end]))
-
+    groups = visual_groups(script or title or "technology news", max_clips)
     return [
         {
             "scene_index": index,

@@ -8,11 +8,11 @@ from backend.app.models import Scene
 
 
 def ass_time(seconds: float) -> str:
-    seconds = max(seconds, 0.0)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = seconds % 60
-    return f"{hours}:{minutes:02d}:{secs:05.2f}"
+    centiseconds = round(max(seconds, 0.0) * 100)
+    hours, remainder = divmod(centiseconds, 360000)
+    minutes, remainder = divmod(remainder, 6000)
+    seconds, fraction = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{seconds:02d}.{fraction:02d}"
 
 
 def ass_escape(text: str) -> str:
@@ -102,6 +102,25 @@ def split_caption_chunks(
 
 
 def _caption_events_for_scene(scene: Scene) -> list[tuple[float, float, str]]:
+    if scene.words:
+        # A silence is a caption boundary even inside a written sentence.
+        groups = []
+        current = []
+        for word in scene.words:
+            if current and (word.start - current[-1].end > 0.6
+                            or len(current) >= 7
+                            or len(" ".join(w.text for w in current) + " " + word.text) > 42):
+                groups.append(current)
+                current = []
+            current.append(word)
+            if word.text.rstrip('"\u201d\u2019').endswith((".", "!", "?", ",", ";", ":")):
+                groups.append(current)
+                current = []
+        if current:
+            groups.append(current)
+        return [(group[0].start, group[-1].end, " ".join(w.text for w in group))
+                for group in groups]
+
     chunks = split_caption_chunks(scene.text)
     if not chunks:
         return []
@@ -176,6 +195,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     if ending_question.strip() and total_duration > 1.0:
         ending_start = max(total_duration - 2.4, 0.0)
+        words = [word for scene in scenes for word in scene.words]
+        if words:
+            # Show the final spoken question at its actual onset. An unspoken
+            # call-to-action is shown only after the narration has finished.
+            ending_start = words[-1].end
+            if words[-1].text.rstrip('"\u201d\u2019').endswith("?"):
+                index = len(words) - 1
+                while index > 0 and not words[index - 1].text.rstrip('"\u201d\u2019').endswith((".", "!", "?", "\u2026")):
+                    index -= 1
+                ending_start = words[index].start
         ending_text = ass_escape(
             wrap_caption(ending_question.upper(), width=19, max_lines=3)
         )
