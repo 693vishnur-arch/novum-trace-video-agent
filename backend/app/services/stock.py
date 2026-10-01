@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 PEXELS_API = "https://api.pexels.com/v1/videos"
 PIXABAY_API = "https://pixabay.com/api/videos/"
-USER_AGENT = "NovumTraceVideoAgent/1.3"
+USER_AGENT = "NovumTraceVideoAgent/1.4.2"
 MAX_DOWNLOAD_BYTES = 60 * 1024 * 1024
 DEFAULT_RESULTS_PER_PROVIDER = 6
 
@@ -169,8 +169,28 @@ def _tokenize(text: str) -> list[str]:
     ]
 
 
+def _match_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.casefold())
+
+
+def _contains_term(source: str, term: str) -> bool:
+    """Match complete words/phrases, never arbitrary substrings.
+
+    Example: "space" must match "space technology" but not "workspaces".
+    Token matching also treats hyphens as phrase separators, so "zero-day"
+    and "zero day" are equivalent for concept detection.
+    """
+    source_tokens = _match_tokens(source)
+    term_tokens = _match_tokens(term)
+    if not term_tokens or len(term_tokens) > len(source_tokens):
+        return False
+    size = len(term_tokens)
+    return any(source_tokens[index:index + size] == term_tokens
+               for index in range(len(source_tokens) - size + 1))
+
+
 def _contains_any(source: str, terms: Iterable[str]) -> bool:
-    return any(term in source for term in terms)
+    return any(_contains_term(source, term) for term in terms)
 
 
 def _visual_theme(text: str, fallback: str = "") -> str:
@@ -247,7 +267,7 @@ def build_search_query(text: str, fallback: str = "") -> str:
 
     combined_source = f"{scene} {context}".strip()
     for triggers, query in CONCEPT_RULES:
-        if any(trigger in combined_source for trigger in triggers):
+        if _contains_any(combined_source, triggers):
             return query
 
     tokens = _tokenize(scene or context)
@@ -260,16 +280,22 @@ def build_search_query(text: str, fallback: str = "") -> str:
     return " ".join(unique) if unique else "technology data center"
 
 
-def build_review_queries(script: str, title: str, max_clips: int = 6) -> list[dict[str, Any]]:
+def build_review_queries(
+    script: str,
+    title: str,
+    max_clips: int = 6,
+    prompt: str = "",
+) -> list[dict[str, Any]]:
     max_clips = min(max(int(max_clips or 1), 1), 8)
     from backend.app.services.planner import visual_groups
 
     groups = visual_groups(script or title or "technology news", max_clips)
+    search_context = f"{title} {prompt}".strip()
     return [
         {
             "scene_index": index,
             "text": text,
-            "query": build_search_query(text, fallback=title),
+            "query": build_search_query(text, fallback=search_context),
         }
         for index, text in enumerate(groups[:max_clips])
     ]
