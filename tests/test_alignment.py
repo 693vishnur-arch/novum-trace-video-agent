@@ -90,6 +90,14 @@ def test_absolute_frame_boundaries_do_not_accumulate_rounding(monkeypatch, tmp_p
     commands = []
     monkeypatch.setattr(renderer, "_render_scene", lambda src, out, duration: durations.append(duration))
     monkeypatch.setattr(renderer, "run", lambda cmd: commands.append(cmd))
+    monkeypatch.setattr(
+        renderer,
+        "probe_streams",
+        lambda path: [
+            {"codec_type": "video", "start_time": "0", "duration": "9.042"},
+            {"codec_type": "audio", "start_time": "0", "duration": "9.042"},
+        ],
+    )
     renderer.render_video(tmp_path, scenes, [], tmp_path / "clean.wav", 9.013,
                           "", "", narration_prepared=True)
     cumulative = 0
@@ -97,7 +105,7 @@ def test_absolute_frame_boundaries_do_not_accumulate_rounding(monkeypatch, tmp_p
         cumulative += duration
         assert abs(cumulative - scene.end) <= 0.5 / renderer.OUTPUT_FPS + 1e-9
     assert sum(durations) == pytest.approx(math.ceil(9.013 * 24) / 24)
-    assert not any("pcm_s16le" in cmd for cmd in commands)
+    assert any("pcm_s16le" in cmd for cmd in commands)
 
 
 def test_ass_time_carries_rounding_into_next_minute():
