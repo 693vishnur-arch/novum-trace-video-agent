@@ -1,4 +1,4 @@
-from backend.app.models import Scene
+from backend.app.models import Scene, WordTiming
 from backend.app.services.captions import build_ass, split_caption_chunks
 
 
@@ -45,3 +45,41 @@ def test_build_ass_splits_long_scene_without_truncation(tmp_path):
     assert len(body_events) >= 2
     assert "off." in ass
     assert "..." not in ass
+
+
+
+def test_end_card_suppresses_duplicate_body_caption(tmp_path):
+    words = [
+        WordTiming("Would", 6.0, 6.3),
+        WordTiming("you", 6.3, 6.5),
+        WordTiming("trust", 6.5, 6.8),
+        WordTiming("it?", 6.8, 7.1),
+    ]
+    scene = Scene(
+        index=0,
+        start=0.0,
+        end=8.0,
+        duration=8.0,
+        text="Would you trust it?",
+        clip_name=None,
+        role="ending",
+        words=words,
+    )
+    output = tmp_path / "captions.ass"
+    build_ass([scene], output, hook="", ending_question="Would you trust it?", total_duration=8.0)
+    ass = output.read_text(encoding="utf-8")
+    assert "Dialogue: 3,0:00:06.00,0:00:08.00,Ending" in ass
+    assert not any(
+        line.startswith("Dialogue: 0,0:00:06") and ",Caption," in line
+        for line in ass.splitlines()
+    )
+
+
+def test_long_hook_wrap_does_not_widen_into_clipped_lines():
+    from backend.app.services.captions import wrap_caption
+    wrapped = wrap_caption(
+        "OPENAI JUST LAUNCHED AN AI THAT NEVER CLOCKS OUT",
+        width=18,
+        max_lines=3,
+    )
+    assert max(len(line) for line in wrapped.splitlines()) <= 18
