@@ -37,6 +37,14 @@ import pytest
 def test_final_render_uses_clean_narration(monkeypatch, tmp_path, with_music):
     commands = []
     monkeypatch.setattr(renderer, "run", lambda cmd: commands.append(cmd))
+    monkeypatch.setattr(
+        renderer,
+        "probe_streams",
+        lambda path: [
+            {"codec_type": "video", "start_time": "0", "duration": "4.0"},
+            {"codec_type": "audio", "start_time": "0", "duration": "4.0"},
+        ],
+    )
     source = tmp_path / "voice.mp3"
     renderer.render_video(
         tmp_path, [], [], source, 4.0, "Hook", "Question?",
@@ -44,5 +52,21 @@ def test_final_render_uses_clean_narration(monkeypatch, tmp_path, with_music):
     )
     final = commands[-1]
     inputs = [final[i + 1] for i, arg in enumerate(final) if arg == "-i"]
-    assert str(tmp_path / "work" / "narration_clean.wav") in inputs
+    assert str(tmp_path / "work" / "narration_master.wav") in inputs
     assert str(source) not in inputs
+    assert any("pcm_s16le" in cmd for cmd in commands)
+
+
+
+def test_validate_final_av_rejects_duration_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        renderer,
+        "probe_streams",
+        lambda path: [
+            {"codec_type": "video", "start_time": "0", "duration": "10.0"},
+            {"codec_type": "audio", "start_time": "0", "duration": "8.9"},
+        ],
+    )
+    import pytest
+    with pytest.raises(ValueError, match="duration mismatch"):
+        renderer._validate_final_av(tmp_path / "bad.mp4", 10.0)
