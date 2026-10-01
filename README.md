@@ -1,4 +1,4 @@
-# Novum Trace Video Agent V1.4
+# Novum Trace Video Agent V1.4.2
 
 A self-hosted automatic editor for vertical YouTube Shorts.
 
