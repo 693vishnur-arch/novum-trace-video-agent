@@ -23,10 +23,13 @@ from backend.app.services.stock import (
     api_status as stock_api_status,
     build_review_queries,
     build_search_query,
+    candidate_key,
     credit_record,
     download_candidate,
+    first_unused_candidate,
     get_candidate,
     normalize_providers,
+    promote_unused_candidate,
     search_stock,
     write_credits,
 )
@@ -134,29 +137,36 @@ def _download_stock_for_scenes(
 
         selected = selections.get(int(scene.index))
         if selected:
-            candidate = get_candidate(
-                selected["provider"],
-                selected["id"],
-                query=selected.get("query") or query,
-                prefer_portrait=prefer_portrait,
+            requested_key = (
+                selected["provider"].strip().lower(),
+                selected["id"].strip(),
             )
-        else:
+            # Review mode used to honor duplicate radio defaults across scenes,
+            # which could render the same stock clip repeatedly. Keep a reviewed
+            # selection only if that provider/video ID has not already been used.
+            if requested_key not in used_ids:
+                resolved = get_candidate(
+                    selected["provider"],
+                    selected["id"],
+                    query=selected.get("query") or query,
+                    prefer_portrait=prefer_portrait,
+                )
+                if candidate_key(resolved) not in used_ids:
+                    candidate = resolved
+
+        if candidate is None:
             candidates = search_stock(
                 query,
                 providers=available,
-                limit=6,
+                limit=8,
                 prefer_portrait=prefer_portrait,
             )
-            for item in candidates:
-                key = (str(item.get("provider")), str(item.get("id")))
-                if key not in used_ids:
-                    candidate = item
-                    break
+            candidate = first_unused_candidate(candidates, used_ids)
 
         if not candidate:
             continue
 
-        key = (str(candidate.get("provider")), str(candidate.get("id")))
+        key = candidate_key(candidate)
         used_ids.add(key)
         destination = upload_dir / (
             f"stock_{scene.index:02d}_{candidate['provider']}_{candidate['id']}.mp4"
@@ -357,15 +367,23 @@ def stock_search_preview(
             detail="No stock API key is configured. Add PEXELS_API_KEY and/or PIXABAY_API_KEY in Render.",
         )
 
+    preview_used_ids: set[tuple[str, str]] = set()
+
     for item in queries:
         try:
             candidates = search_stock(
                 item["query"],
                 providers=stock_providers,
-                limit=6,
+                limit=8,
                 prefer_portrait=prefer_portrait,
-            )[:3]
-            results.append({**item, "candidates": candidates, "error": None})
+            )
+            # The first candidate is auto-selected in the browser. Promote a
+            # globally unused clip to the first position so eight reviewed
+            # scenes default to eight different source IDs whenever possible.
+            candidates = promote_unused_candidate(candidates, preview_used_ids)
+            if candidates:
+                preview_used_ids.add(candidate_key(candidates[0]))
+            results.append({**item, "candidates": candidates[:3], "error": None})
         except StockProviderError as exc:
             results.append({**item, "candidates": [], "error": str(exc)})
 
