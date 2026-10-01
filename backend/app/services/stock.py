@@ -107,6 +107,36 @@ def normalize_providers(value: str | Iterable[str] | None) -> list[str]:
     return result or ["pexels", "pixabay"]
 
 
+def candidate_key(candidate: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(candidate.get("provider") or "").strip().lower(),
+        str(candidate.get("id") or "").strip(),
+    )
+
+
+def first_unused_candidate(
+    candidates: Iterable[dict[str, Any]],
+    used_ids: set[tuple[str, str]],
+) -> dict[str, Any] | None:
+    for candidate in candidates:
+        key = candidate_key(candidate)
+        if key[0] and key[1] and key not in used_ids:
+            return candidate
+    return None
+
+
+def promote_unused_candidate(
+    candidates: list[dict[str, Any]],
+    used_ids: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Move the best not-yet-used result to the front for review-mode defaults."""
+    candidate = first_unused_candidate(candidates, used_ids)
+    if candidate is None:
+        return candidates
+    key = candidate_key(candidate)
+    return [candidate, *[item for item in candidates if candidate_key(item) != key]]
+
+
 def _json_request(url: str, *, headers: dict[str, str] | None = None, timeout: int = 18) -> dict[str, Any]:
     request_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     if headers:
