@@ -15,9 +15,9 @@ from backend.app.config import (
 )
 from backend.app.models import Scene
 from backend.app.services.captions import build_ass
-from backend.app.services.media import is_image, is_video, run
+from backend.app.services.media import is_image, is_video, probe_streams, run
 
-VOICE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,asetpts=N/SR/TB"
+VOICE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:async=0:first_pts=0,asetpts=N/SR/TB"
 
 
 def _video_filter() -> str:
@@ -98,6 +98,60 @@ def _prepare_narration(source: Path, work_dir: Path) -> Path:
     return output
 
 
+def _normalize_narration(source: Path, work_dir: Path, total_duration: float) -> Path:
+    """Create the exact master voice track used by the final MP4.
+
+    Normalizing to PCM in a separate pass avoids audio timestamps being
+    rewritten inside the final video filter graph. The result is padded/trimmed
+    to the measured narration duration before AAC encoding.
+    """
+    output = work_dir / "narration_master.wav"
+    run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(source),
+        "-vn",
+        "-af",
+        f"{VOICE_FILTER},apad=pad_dur={total_duration:.3f},"
+        f"atrim=0:{total_duration:.3f},asetpts=N/SR/TB",
+        "-ar", "48000",
+        "-ac", "2",
+        "-c:a", "pcm_s16le",
+        str(output),
+    ])
+    return output
+
+
+def _validate_final_av(path: Path, expected_duration: float) -> None:
+    streams = probe_streams(path)
+    by_type = {str(stream.get("codec_type")): stream for stream in streams}
+    if "audio" not in by_type or "video" not in by_type:
+        raise ValueError("Rendered MP4 is missing an audio or video stream")
+
+    def number(stream: dict[str, object], key: str) -> float:
+        try:
+            return float(stream.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    audio_duration = number(by_type["audio"], "duration")
+    video_duration = number(by_type["video"], "duration")
+    audio_start = number(by_type["audio"], "start_time")
+    video_start = number(by_type["video"], "start_time")
+
+    if abs(audio_start - video_start) > 0.08:
+        raise ValueError("Rendered audio/video start timestamps are not synchronized")
+    if abs(audio_duration - video_duration) > 0.20:
+        raise ValueError(
+            f"Rendered audio/video duration mismatch: audio {audio_duration:.2f}s, "
+            f"video {video_duration:.2f}s"
+        )
+    if abs(video_duration - expected_duration) > 0.20:
+        raise ValueError(
+            f"Rendered duration {video_duration:.2f}s differs from narration "
+            f"{expected_duration:.2f}s"
+        )
+
+
 def _concat_scenes(scene_files: list[Path], output: Path, work_dir: Path) -> None:
     concat_file = work_dir / "concat.txt"
     lines = []
@@ -152,6 +206,7 @@ def render_video(
     build_ass(scenes, captions, hook, ending_question, total_duration)
 
     narration_clean = narration_path if narration_prepared else _prepare_narration(narration_path, work_dir)
+    narration_master = _normalize_narration(narration_clean, work_dir, total_duration)
 
     final_path = project_dir / "final.mp4"
     ass_path = str(captions).replace("\\", "/").replace(":", r"\:")
@@ -160,15 +215,16 @@ def render_video(
         fade_out_start = max(total_duration - 1.0, 0.0)
         filter_complex = (
             f"[0:v]ass='{ass_path}'[v];"
-            f"[1:a]{VOICE_FILTER}[voice];"
-            f"[2:a]aresample=48000,asetpts=N/SR/TB,volume={music_volume:.3f},atrim=0:{total_duration:.3f},"
+            f"[1:a]anull[voice];"
+            f"[2:a]aresample=48000:async=0:first_pts=0,asetpts=N/SR/TB,"
+            f"volume={music_volume:.3f},atrim=0:{total_duration:.3f},"
             f"afade=t=in:st=0:d=0.5,afade=t=out:st={fade_out_start:.3f}:d=1[m];"
             "[voice][m]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,"
             "alimiter=limit=0.95[a]"
         )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(concat_video), "-i", str(narration_clean),
+            "-i", str(concat_video), "-i", str(narration_master),
             "-stream_loop", "-1", "-i", str(music_path),
             "-filter_complex", filter_complex,
             "-map", "[v]", "-map", "[a]",
@@ -179,15 +235,12 @@ def render_video(
             str(final_path),
         ]
     else:
-        filter_complex = (
-            f"[0:v]ass='{ass_path}'[v];"
-            f"[1:a]{VOICE_FILTER}[a]"
-        )
+        filter_complex = f"[0:v]ass='{ass_path}'[v]"
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(concat_video), "-i", str(narration_clean),
+            "-i", str(concat_video), "-i", str(narration_master),
             "-filter_complex", filter_complex,
-            "-map", "[v]", "-map", "[a]",
+            "-map", "[v]", "-map", "1:a:0",
             "-t", f"{total_duration:.3f}",
             *_encode_args(),
             "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
@@ -196,6 +249,7 @@ def render_video(
         ]
 
     run(cmd)
+    _validate_final_av(final_path, total_duration)
     return final_path
 
 
