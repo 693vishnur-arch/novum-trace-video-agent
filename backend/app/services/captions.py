@@ -37,16 +37,8 @@ def wrap_caption(text: str, width: int = 22, max_lines: int = 2) -> str:
         break_on_hyphens=False,
     )
 
-    # For hooks/end cards, gently widen wrapping before allowing an extra line.
-    while max_lines > 0 and len(lines) > max_lines and current_width < 34:
-        current_width += 2
-        lines = textwrap.wrap(
-            text,
-            width=current_width,
-            break_long_words=False,
-            break_on_hyphens=False,
-        )
-
+    # Never widen long hook/end-card lines to force a line-count target.
+    # Horizontal clipping is worse than allowing one extra wrapped line.
     return "\n".join(lines)
 
 
@@ -169,8 +161,8 @@ WrapStyle: 2
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Caption,DejaVu Sans,45,&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,0,0,1,4,1,2,75,75,235,1
-Style: Hook,DejaVu Sans,62,&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,1,0,1,5,2,5,70,70,0,1
-Style: Ending,DejaVu Sans,52,&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,1,0,1,5,2,5,70,70,0,1
+Style: Hook,DejaVu Sans,54,&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,1,0,1,5,2,5,70,70,0,1
+Style: Ending,DejaVu Sans,48,&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,1,0,1,5,2,5,70,70,0,1
 Style: Brand,DejaVu Sans,32,&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,2,0,1,3,1,2,70,70,150,1
 
 [Events]
@@ -178,9 +170,31 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events: list[str] = []
 
+    ending_start: float | None = None
+    if ending_question.strip() and total_duration > 1.0:
+        ending_start = max(total_duration - 2.4, 0.0)
+        words = [word for scene in scenes for word in scene.words]
+        if words:
+            # If the narration ends with a spoken question, show the end card
+            # from the actual question onset. Otherwise show it after speech.
+            ending_start = words[-1].end
+            if words[-1].text.rstrip('"\u201d\u2019').endswith("?"):
+                index = len(words) - 1
+                while index > 0 and not words[index - 1].text.rstrip('"\u201d\u2019').endswith((".", "!", "?", "\u2026")):
+                    index -= 1
+                ending_start = words[index].start
+
     # Dynamic body captions: split long scene text into short timed beats.
+    # Suppress body subtitles beneath the end card so the final question is not
+    # rendered twice at the same time.
     for scene in scenes:
         for start, end, chunk in _caption_events_for_scene(scene):
+            if ending_start is not None:
+                if start >= ending_start:
+                    continue
+                end = min(end, ending_start)
+                if end <= start:
+                    continue
             text = ass_escape(wrap_caption(chunk, width=22, max_lines=2))
             events.append(
                 f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{text}"
@@ -193,20 +207,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 2,{ass_time(0)},{ass_time(hook_end)},Hook,,0,0,0,,{hook_text}"
         )
 
-    if ending_question.strip() and total_duration > 1.0:
-        ending_start = max(total_duration - 2.4, 0.0)
-        words = [word for scene in scenes for word in scene.words]
-        if words:
-            # Show the final spoken question at its actual onset. An unspoken
-            # call-to-action is shown only after the narration has finished.
-            ending_start = words[-1].end
-            if words[-1].text.rstrip('"\u201d\u2019').endswith("?"):
-                index = len(words) - 1
-                while index > 0 and not words[index - 1].text.rstrip('"\u201d\u2019').endswith((".", "!", "?", "\u2026")):
-                    index -= 1
-                ending_start = words[index].start
+    if ending_start is not None:
         ending_text = ass_escape(
-            wrap_caption(ending_question.upper(), width=19, max_lines=3)
+            wrap_caption(ending_question.upper(), width=18, max_lines=3)
         )
         events.append(
             f"Dialogue: 3,{ass_time(ending_start)},{ass_time(total_duration)},Ending,,0,0,0,,{ending_text}"
