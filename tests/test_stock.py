@@ -5,7 +5,10 @@ from backend.app.services.stock import (
     _score_candidate,
     build_review_queries,
     build_search_query,
+    candidate_key,
+    first_unused_candidate,
     normalize_providers,
+    promote_unused_candidate,
 )
 
 
@@ -135,3 +138,31 @@ def test_relevant_landscape_rocket_beats_unrelated_portrait_clip():
         "rocket launch pad",
         prefer_portrait=True,
     )
+
+
+
+def test_first_unused_candidate_skips_duplicate_video_id():
+    used = {("pexels", "100")}
+    candidates = [
+        {"provider": "pexels", "id": "100"},
+        {"provider": "pexels", "id": "101"},
+        {"provider": "pixabay", "id": "200"},
+    ]
+    selected = first_unused_candidate(candidates, used)
+    assert candidate_key(selected) == ("pexels", "101")
+
+
+def test_promote_unused_candidate_makes_review_default_unique():
+    used = {("pexels", "100")}
+    candidates = [
+        {"provider": "pexels", "id": "100"},
+        {"provider": "pexels", "id": "101"},
+        {"provider": "pexels", "id": "102"},
+    ]
+    reordered = promote_unused_candidate(candidates, used)
+    assert candidate_key(reordered[0]) == ("pexels", "101")
+    assert {candidate_key(item) for item in reordered} == {
+        ("pexels", "100"),
+        ("pexels", "101"),
+        ("pexels", "102"),
+    }
