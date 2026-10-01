@@ -36,7 +36,7 @@ def test_build_ass_splits_long_scene_without_truncation(tmp_path):
         [scene],
         output,
         hook="SERVER WARNING",
-        ending_question="HOW SERIOUS IS THE THREAT?",
+        ending_question="",
         total_duration=8.0,
     )
     ass = output.read_text(encoding="utf-8")
