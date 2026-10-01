@@ -155,6 +155,7 @@ findStockButton.addEventListener('click', async function () {
   try {
     const data = new FormData();
     data.set('title', title);
+    data.set('prompt', $('prompt').value.trim());
     data.set('script', script);
     data.set('stock_providers', stockProviders.value);
     data.set('stock_max_clips', stockMaxClips.value);
