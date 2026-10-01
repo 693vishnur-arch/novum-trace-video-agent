@@ -178,16 +178,10 @@ def _download_stock_for_scenes(
 
     all_paths = [*visual_paths, *stock_paths]
 
-    # If the Short has more scenes than the configured stock download cap, reuse
-    # the downloaded stock clips rather than making more network requests.
-    if stock_paths:
-        for scene in scenes:
-            if not scene.clip_name:
-                scene.clip_name = stock_paths[int(scene.index) % len(stock_paths)].name
-    elif visual_paths:
-        for scene in scenes:
-            if not scene.clip_name:
-                scene.clip_name = visual_paths[int(scene.index) % len(visual_paths)].name
+    # Do not cycle already-used stock into unmatched scenes. V1.4.1 keeps one
+    # provider/video ID per scene; if a provider cannot supply another distinct
+    # match, the renderer uses its neutral background instead of repeating B-roll.
+    # In mixed mode, uploaded clips are also consumed only once above.
 
     if credits:
         write_credits(project_dir / "credits.txt", credits)
