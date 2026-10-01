@@ -31,6 +31,21 @@ def probe_duration(path: Path) -> float:
     return float(payload["format"]["duration"])
 
 
+def probe_streams(path: Path) -> list[dict[str, object]]:
+    proc = run([
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type,start_time,duration",
+        "-of",
+        "json",
+        str(path),
+    ])
+    payload = json.loads(proc.stdout)
+    return list(payload.get("streams") or [])
+
+
 def is_image(path: Path) -> bool:
     return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
 
