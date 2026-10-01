@@ -166,3 +166,31 @@ def test_promote_unused_candidate_makes_review_default_unique():
         ("pexels", "101"),
         ("pexels", "102"),
     }
+
+
+
+def test_workspace_does_not_trigger_space_theme():
+    query = build_search_query(
+        "The agent can work across connected business apps.",
+        fallback="OpenAI Dots always-on AI agent futuristic digital workspaces",
+    )
+    assert "rocket" not in query
+    assert "spacecraft" not in query
+    assert "artificial" in query
+
+
+def test_review_and_render_use_same_search_context():
+    script = "It can work across connected business apps."
+    title = "OpenAI Dots Always-On AI Agent"
+    prompt = "Futuristic digital workspaces and cloud computers."
+    preview = build_review_queries(
+        script,
+        title,
+        max_clips=1,
+        prompt=prompt,
+    )[0]["query"]
+    render = build_search_query(
+        script,
+        fallback=f"{title} {prompt}",
+    )
+    assert preview == render
