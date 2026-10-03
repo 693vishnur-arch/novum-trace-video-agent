@@ -150,6 +150,28 @@ def _interpolate_missing_script_words(
     return result
 
 
+def _is_repeated_asr_insert(
+    script_tokens: list[str],
+    inserted_tokens: list[str],
+    script_index: int,
+) -> bool:
+    """Return true for a substantial ASR phrase that repeats earlier script text.
+
+    Tiny speech models can hallucinate the previous sentence again during a
+    pause. We only suppress insertions of at least four normalized words when
+    that exact phrase already occurs before the current script position.
+    """
+    if len(inserted_tokens) < 4:
+        return False
+    length = len(inserted_tokens)
+    earliest = max(0, script_index - 40)
+    latest = script_index - length
+    for start in range(earliest, latest + 1):
+        if script_tokens[start:start + length] == inserted_tokens:
+            return True
+    return False
+
+
 def validate_words(words: list[WordTiming], duration: float) -> list[WordTiming]:
     if not words:
         raise AlignmentError("No speech was detected in the narration.")
@@ -203,6 +225,11 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
                 result.extend(restored)
                 continue
 
+        if tag == "insert" and i == j and _is_repeated_asr_insert(a, b[x:y], i):
+            # Ignore a duplicated phrase hallucinated by the recognizer during
+            # a pause; later script words keep their measured timestamps.
+            continue
+
         if (tag != "replace" or max(j - i, y - x) > 3
                 or any(spoken[k].start - spoken[k - 1].end > 0.6 for k in range(x + 1, y))):
             expected = " ".join(tokens[i:j]) or "(no words)"
@@ -248,8 +275,12 @@ def _worker(request: Path, response: Path) -> None:
     model = WhisperModel(os.getenv("WHISPER_MODEL", "tiny.en"), device="cpu",
                          compute_type="int8", cpu_threads=1, num_workers=1)
     segments, _ = model.transcribe(
-        payload["audio"], word_timestamps=True, beam_size=5,
-        condition_on_previous_text=False, vad_filter=False,
+        payload["audio"],
+        word_timestamps=True,
+        beam_size=5,
+        condition_on_previous_text=False,
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": 250},
     )
     words = [{"text": word.word.strip(), "start": word.start, "end": word.end}
              for segment in segments for word in (segment.words or [])
