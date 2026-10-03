@@ -44,6 +44,33 @@ def test_spelling_is_preserved_without_moving_measured_words():
     assert aligned[1].start == words[2].start
 
 
+def test_split_acronym_is_retokenized_without_failure():
+    words = measured("A I can work all day.")
+    aligned = match_script("AI can work all day.", words, 5)
+    assert aligned[0].text == "AI"
+    assert aligned[0].start == words[0].start
+    assert aligned[0].end == words[1].end
+    assert aligned[1].text == "can"
+
+
+def test_contraction_tokenization_difference_is_allowed():
+    words = measured("It is already working.")
+    aligned = match_script("It's already working.", words, 5)
+    assert [word.text for word in aligned] == ["It's", "already", "working."]
+    assert aligned[0].start == words[0].start
+    assert aligned[0].end == words[1].end
+
+
+def test_missing_script_word_reports_exact_mismatch():
+    words = measured("Google sent chips into orbit today.")
+    with pytest.raises(AlignmentError) as exc:
+        match_script("Google sent AI chips into orbit today.", words, 8)
+    message = str(exc.value)
+    assert "Script/audio mismatch near" in message
+    assert 'script "AI"' in message
+    assert 'recognized "(no words)"' in message
+
+
 @pytest.mark.parametrize("script", ["An entirely unrelated narration.", "One two three missing four five six seven."])
 def test_mismatched_script_does_not_get_estimated_timestamps(script):
     with pytest.raises(AlignmentError):
