@@ -83,6 +83,23 @@ def test_missing_script_word_without_measured_gap_reports_exact_mismatch():
     assert 'recognized "(no words)"' in message
 
 
+def test_repeated_asr_sentence_is_ignored():
+    script = "Google just sent AI hardware into space. A prototype satellite reached orbit."
+    words = measured(
+        "Google just sent AI hardware into space. "
+        "Google just sent AI hardware into space. "
+        "A prototype satellite reached orbit.",
+        start=0.4,
+        step=0.3,
+    )
+    aligned = match_script(script, words, 10)
+    assert [word.text for word in aligned] == script.split()
+    # The second sentence must keep the timestamps from the actual later
+    # recognition, not from the hallucinated repeated first sentence.
+    assert aligned[7].text == "A"
+    assert aligned[7].start == pytest.approx(words[14].start)
+
+
 @pytest.mark.parametrize("script", ["An entirely unrelated narration.", "One two three missing four five six seven."])
 def test_mismatched_script_does_not_get_estimated_timestamps(script):
     with pytest.raises(AlignmentError):
