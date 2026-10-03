@@ -25,6 +25,43 @@ def normalized(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
 
 
+def _retokenize_exact(tokens: list[str], spoken: list[WordTiming]) -> list[WordTiming] | None:
+    """Reconcile identical text with different word boundaries before diffing.
+
+    Map character offsets within measured words, preserving pauses between them.
+    Never merge a script word across a long silence.
+    """
+    a = [normalized(token) for token in tokens]
+    b = [normalized(word.text) for word in spoken]
+    if not all(a) or not all(b) or "".join(a) != "".join(b):
+        return None
+    spans = []
+    offset = 0
+    for text, word in zip(b, spoken):
+        spans.append((offset, offset + len(text), word))
+        offset += len(text)
+    result = []
+    offset = 0
+    cursor = 0
+    for token, text in zip(tokens, a):
+        end_offset = offset + len(text)
+        while spans[cursor][1] <= offset:
+            cursor += 1
+        last = cursor
+        while spans[last][1] < end_offset:
+            last += 1
+        if any(spans[k][2].start - spans[k - 1][2].end > 0.6
+               for k in range(cursor + 1, last + 1)):
+            raise AlignmentError(f'Cannot align script word "{token}" across a long pause in the narration.')
+        left, right, first_word = spans[cursor]
+        start = first_word.start + (offset - left) / (right - left) * (first_word.end - first_word.start)
+        left, right, last_word = spans[last]
+        end = last_word.start + (end_offset - left) / (right - left) * (last_word.end - last_word.start)
+        result.append(WordTiming(token, start, end))
+        offset = end_offset
+    return result
+
+
 def validate_words(words: list[WordTiming], duration: float) -> list[WordTiming]:
     if not words:
         raise AlignmentError("No speech was detected in the narration.")
@@ -53,6 +90,9 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
     tokens = script.split()
     if not tokens:
         return spoken
+    retokenized = _retokenize_exact(tokens, spoken)
+    if retokenized is not None:
+        return validate_words(retokenized, duration)
     a = [normalized(w) for w in tokens]
     b = [normalized(w.text) for w in spoken]
     matcher = SequenceMatcher(None, a, b, autojunk=False)
@@ -67,7 +107,13 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
             continue
         if (tag != "replace" or max(j - i, y - x) > 3
                 or any(spoken[k].start - spoken[k - 1].end > 0.6 for k in range(x + 1, y))):
-            raise AlignmentError("Some script words could not be aligned to the narration. Check for missing or extra words, then retry.")
+            expected = " ".join(tokens[i:j]) or "(no words)"
+            recognized = " ".join(word.text for word in spoken[x:y]) or "(no words)"
+            context = " ".join(tokens[max(0, i - 3):min(len(tokens), j + 3)])
+            raise AlignmentError(
+                f'Script/audio mismatch near "{context}": script "{expected}"; '
+                f'recognized "{recognized}". Check this passage in the audio and script, then retry.'
+            )
         if j - i == y - x:
             result.extend(WordTiming(tokens[k], spoken[x + k - i].start,
                                      spoken[x + k - i].end) for k in range(i, j))
