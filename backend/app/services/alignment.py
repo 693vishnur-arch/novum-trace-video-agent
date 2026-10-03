@@ -25,14 +25,66 @@ def normalized(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
 
 
+_CONTRACTION_CANONICAL = {
+    "i'm": "iam",
+    "i've": "ihave",
+    "i'll": "iwill",
+    "i'd": "iwould",
+    "you're": "youare",
+    "you've": "youhave",
+    "you'll": "youwill",
+    "you'd": "youwould",
+    "he's": "heis",
+    "she's": "sheis",
+    "it's": "itis",
+    "we're": "weare",
+    "we've": "wehave",
+    "we'll": "wewill",
+    "we'd": "wewould",
+    "they're": "theyare",
+    "they've": "theyhave",
+    "they'll": "theywill",
+    "they'd": "theywould",
+    "that's": "thatis",
+    "there's": "thereis",
+    "what's": "whatis",
+    "who's": "whois",
+    "let's": "letus",
+    "can't": "cannot",
+    "won't": "willnot",
+    "don't": "donot",
+    "doesn't": "doesnot",
+    "didn't": "didnot",
+    "isn't": "isnot",
+    "aren't": "arenot",
+    "wasn't": "wasnot",
+    "weren't": "werenot",
+    "haven't": "havenot",
+    "hasn't": "hasnot",
+    "hadn't": "hadnot",
+    "wouldn't": "wouldnot",
+    "shouldn't": "shouldnot",
+    "couldn't": "couldnot",
+    "mustn't": "mustnot",
+}
+
+
+def _canonical_token(text: str) -> str:
+    surface = text.casefold().replace("’", "'")
+    surface = re.sub(r"^[^a-z0-9']+|[^a-z0-9']+$", "", surface)
+    if surface in _CONTRACTION_CANONICAL:
+        return _CONTRACTION_CANONICAL[surface]
+    return normalized(text)
+
+
 def _retokenize_exact(tokens: list[str], spoken: list[WordTiming]) -> list[WordTiming] | None:
     """Reconcile identical text with different word boundaries before diffing.
 
     Map character offsets within measured words, preserving pauses between them.
     Never merge a script word across a long silence.
     """
-    a = [normalized(token) for token in tokens]
-    b = [normalized(word.text) for word in spoken]
+    a = [_canonical_token(token) for token in tokens]
+    b = [_canonical_token(word.text) for word in spoken]
     if not all(a) or not all(b) or "".join(a) != "".join(b):
         return None
     spans = []
@@ -97,7 +149,11 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
     b = [normalized(w.text) for w in spoken]
     matcher = SequenceMatcher(None, a, b, autojunk=False)
     matched = sum(block.size for block in matcher.get_matching_blocks())
-    if matched / max(len(a), len(b)) < 0.75:
+    token_ratio = matched / max(len(a), len(b))
+    script_chars = "".join(_canonical_token(token) for token in tokens)
+    spoken_chars = "".join(_canonical_token(word.text) for word in spoken)
+    char_ratio = SequenceMatcher(None, script_chars, spoken_chars, autojunk=False).ratio()
+    if token_ratio < 0.75 and char_ratio < 0.88:
         raise AlignmentError("The script does not closely match the narration. Check the script and audio, then retry.")
     result: list[WordTiming] = []
     for tag, i, j, x, y in matcher.get_opcodes():
