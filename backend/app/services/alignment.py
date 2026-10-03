@@ -219,7 +219,11 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
             result.extend(WordTiming(tokens[k], spoken[x + k - i].start,
                                      spoken[x + k - i].end) for k in range(i, j))
             continue
-        if tag == "delete" and x == y:
+        if tag == "delete" and x == y and char_ratio >= 0.97:
+            # Only recover an ASR omission when the entire narration otherwise
+            # matches the script almost exactly. This avoids inventing words for
+            # a genuinely different/short script while tolerating one missed
+            # word in a long, matching ElevenLabs narration.
             restored = _interpolate_missing_script_words(tokens, spoken, i, j, x)
             if restored is not None:
                 result.extend(restored)
