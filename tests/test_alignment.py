@@ -61,8 +61,20 @@ def test_contraction_tokenization_difference_is_allowed():
     assert aligned[0].end == words[1].end
 
 
-def test_missing_script_word_reports_exact_mismatch():
+def test_single_missing_asr_word_is_interpolated_from_measured_gap():
     words = measured("Google sent chips into orbit today.")
+    aligned = match_script("Google sent AI chips into orbit today.", words, 8)
+    assert [word.text for word in aligned] == [
+        "Google", "sent", "AI", "chips", "into", "orbit", "today."
+    ]
+    ai = aligned[2]
+    assert ai.start == pytest.approx(words[1].end)
+    assert ai.end == pytest.approx(words[2].start)
+
+
+def test_missing_script_word_without_measured_gap_reports_exact_mismatch():
+    words = measured("Google sent chips into orbit today.")
+    words[2].start = words[1].end
     with pytest.raises(AlignmentError) as exc:
         match_script("Google sent AI chips into orbit today.", words, 8)
     message = str(exc.value)
