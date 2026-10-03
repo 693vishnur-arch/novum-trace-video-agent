@@ -1,4 +1,4 @@
-# Novum Trace Video Agent V1.4.3
+# Novum Trace Video Agent V1.4.4
 
 A self-hosted automatic editor for vertical YouTube Shorts.
 
@@ -24,11 +24,12 @@ to release memory. Larger models need more RAM. Use a single Uvicorn worker.
 
 Existing MP4s are unchanged: create a new render to apply speech timing.
 
-### V1.4.3 narration-alignment reliability
+### V1.4.4 narration-alignment reliability
 
 - Equivalent tokenization such as `AI` versus `A I` is reconciled using measured speech timestamps.
 - Small contraction/tokenization differences can share the observed speech span instead of aborting the render.
-- Genuine missing/extra words now report the nearby script text and recognized speech so the mismatch can be corrected quickly.
+- A one- or two-word ASR omission can be recovered from the measured timestamp gap between correctly recognized neighboring words.
+- Genuine missing/extra words without a safe measured gap still report the nearby script text and recognized speech.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/693vishnur-arch/novum-trace-video-agent)
 
