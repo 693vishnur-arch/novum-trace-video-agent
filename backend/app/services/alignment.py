@@ -114,6 +114,42 @@ def _retokenize_exact(tokens: list[str], spoken: list[WordTiming]) -> list[WordT
     return result
 
 
+def _interpolate_missing_script_words(
+    tokens: list[str],
+    spoken: list[WordTiming],
+    i: int,
+    j: int,
+    x: int,
+) -> list[WordTiming] | None:
+    """Recover a tiny ASR omission using the measured gap between anchor words.
+
+    This is intentionally conservative: only one or two internal script words
+    may be restored, there must be recognized speech on both sides, and the
+    measured gap must be short enough to represent speech rather than a pause.
+    """
+    count = j - i
+    if count < 1 or count > 2 or x <= 0 or x >= len(spoken):
+        return None
+
+    start = float(spoken[x - 1].end)
+    end = float(spoken[x].start)
+    gap = end - start
+    if gap < 0.04 or gap > 1.0:
+        return None
+
+    weights = [max(len(normalized(token)), 1) for token in tokens[i:j]]
+    total = sum(weights)
+    cursor = start
+    result: list[WordTiming] = []
+    for offset, (token, weight) in enumerate(zip(tokens[i:j], weights)):
+        token_end = end if offset == count - 1 else cursor + gap * (weight / total)
+        if token_end <= cursor:
+            return None
+        result.append(WordTiming(token, cursor, token_end))
+        cursor = token_end
+    return result
+
+
 def validate_words(words: list[WordTiming], duration: float) -> list[WordTiming]:
     if not words:
         raise AlignmentError("No speech was detected in the narration.")
@@ -161,6 +197,12 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
             result.extend(WordTiming(tokens[k], spoken[x + k - i].start,
                                      spoken[x + k - i].end) for k in range(i, j))
             continue
+        if tag == "delete" and x == y:
+            restored = _interpolate_missing_script_words(tokens, spoken, i, j, x)
+            if restored is not None:
+                result.extend(restored)
+                continue
+
         if (tag != "replace" or max(j - i, y - x) > 3
                 or any(spoken[k].start - spoken[k - 1].end > 0.6 for k in range(x + 1, y))):
             expected = " ".join(tokens[i:j]) or "(no words)"
