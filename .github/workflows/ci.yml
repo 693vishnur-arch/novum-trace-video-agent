@@ -32,3 +32,5 @@ jobs:
         run: docker build -t novum-timing-test .
       - name: Verify speech alignment and render within 512 MB
         run: docker run --rm --memory=512m --memory-swap=512m --cpus=1 -v /tmp/alignment-fixture:/fixture:ro novum-timing-test python -m tests.smoke_alignment
+      - name: Verify long narration alignment within 512 MB
+        run: docker run --rm --memory=512m --memory-swap=512m --cpus=1 -v /tmp/alignment-fixture:/fixture:ro novum-timing-test python -m tests.smoke_long_alignment

@@ -21,6 +21,7 @@ const stockCandidates = $('stockCandidates');
 const stockSearchError = $('stockSearchError');
 const findStockButton = $('findStockButton');
 let pollTimer = null;
+let pollGeneration = 0;
 
 function fileLabel(id, target, multiple) {
   const input = $(id);
@@ -265,16 +266,33 @@ function applyState(state) {
 
 function startPolling(projectId) {
   clearInterval(pollTimer);
-  pollTimer = setInterval(async function () {
+  const generation = ++pollGeneration;
+  async function poll() {
     try {
-      const r = await fetch('/api/projects/' + projectId);
-      if (!r.ok) throw new Error('Could not read project status');
-      applyState(await r.json());
+      const r = await fetch('/api/projects/' + projectId, {signal: AbortSignal.timeout(15000)});
+      if (generation !== pollGeneration) return;
+      if (r.status === 404) {
+        $('statusLabel').textContent = 'project unavailable';
+        renderError.textContent = 'The server no longer has this project. It may have restarted and cleared temporary files. Your form is still here; click Create to retry.';
+        renderError.classList.remove('hidden');
+        createButton.disabled = false;
+        createButton.textContent = createLabel();
+        loadHistory();
+        return;
+      }
+      if (!r.ok) throw new Error('Status temporarily unavailable (HTTP ' + r.status + '). Reconnecting...');
+      const state = await r.json();
+      if (generation !== pollGeneration) return;
+      applyState(state);
+      if (state.status === 'complete' || state.status === 'failed') return;
     } catch (err) {
-      renderError.textContent = err.message;
+      if (generation !== pollGeneration) return;
+      renderError.textContent = 'Connection interrupted. Retrying project status automatically. ' + err.message;
       renderError.classList.remove('hidden');
     }
-  }, 1800);
+    if (generation === pollGeneration) pollTimer = setTimeout(poll, 1800);
+  }
+  poll();
 }
 
 form.addEventListener('submit', async function (event) {
@@ -316,7 +334,9 @@ form.addEventListener('submit', async function (event) {
 async function loadHistory() {
   try {
     const r = await fetch('/api/projects');
+    if (!r.ok) throw new Error('Could not load project history');
     const projects = await r.json();
+    if (!Array.isArray(projects)) throw new Error('Invalid project history');
     if (!projects.length) {
       $('history').innerHTML = '<p>No projects yet.</p>';
       return;
