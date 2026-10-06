@@ -289,49 +289,73 @@ def align_narration(audio: Path, script: str, duration: float, work_dir: Path) -
 
 
 def _transcribe_chunks(model, audio: Path) -> list[dict]:
-    """Bound decoding/VAD/features to 30 seconds, even for long narrations.
+    """Transcribe long narration with overlapping 30-second windows.
 
-    Keep five seconds of lookahead and resume at the last accepted word's end
-    so an arbitrary chunk boundary never truncates a word we keep. All offsets
-    remain on the original audio sample timeline.
+    A previous implementation resumed each window at the last accepted word.
+    That could place a real word exactly on the next Whisper window boundary,
+    where tiny.en occasionally omitted it. Use a fixed 20-second stride with
+    five seconds of protected overlap on each side instead.
+
+    Words are assigned by midpoint to non-overlapping safe regions:
+      first window:   0s <= midpoint < 25s
+      middle windows: 5s <= midpoint < 25s
+      final window:   5s <= midpoint to end
+
+    This keeps every output word on the original PCM timeline while ensuring
+    boundary speech is decoded with several seconds of context on both sides.
     """
     import numpy as np
+
+    window_seconds = 30
+    stride_seconds = 20
+    guard_seconds = 5
 
     words = []
     with wave.open(str(audio), "rb") as source:
         rate = source.getframerate()
         if source.getnchannels() != 1 or source.getsampwidth() != 2 or rate != 16000:
             raise AlignmentError("Alignment requires mono 16 kHz PCM audio.")
+
         total = source.getnframes()
         cursor = 0
         while cursor < total:
             source.setpos(cursor)
-            frames = min(30 * rate, total - cursor)
+            frames = min(window_seconds * rate, total - cursor)
             samples = np.frombuffer(source.readframes(frames), dtype="<i2").astype(np.float32)
             samples /= 32768.0
+
             segments, _ = model.transcribe(
-                samples, word_timestamps=True, beam_size=5,
-                condition_on_previous_text=False, vad_filter=True,
+                samples,
+                word_timestamps=True,
+                beam_size=5,
+                condition_on_previous_text=False,
+                vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 250},
             )
+
             final = cursor + frames >= total
-            cutoff = frames / rate if final else 25.0
-            accepted = []
+            lower_midpoint = 0.0 if cursor == 0 else guard_seconds
+            upper_midpoint = float("inf") if final else window_seconds - guard_seconds
+
             for segment in segments:
                 for word in segment.words or []:
-                    if (word.word.strip() and math.isfinite(word.start)
-                            and math.isfinite(word.end)
-                            and 0 <= word.start < word.end <= cutoff):
-                        accepted.append({"text": word.word.strip(),
-                                         "start": cursor / rate + word.start,
-                                         "end": cursor / rate + word.end})
-            words.extend(accepted)
+                    text = word.word.strip()
+                    if not (text and math.isfinite(word.start) and math.isfinite(word.end)
+                            and 0 <= word.start < word.end <= frames / rate + 0.05):
+                        continue
+                    midpoint = (word.start + word.end) / 2.0
+                    if midpoint < lower_midpoint or midpoint >= upper_midpoint:
+                        continue
+                    words.append({
+                        "text": text,
+                        "start": cursor / rate + word.start,
+                        "end": cursor / rate + word.end,
+                    })
+
             if final:
                 break
-            next_cursor = round(accepted[-1]["end"] * rate) if accepted else cursor + 25 * rate
-            if next_cursor <= cursor:
-                raise AlignmentError("Speech alignment did not advance through the audio.")
-            cursor = next_cursor
+            cursor += stride_seconds * rate
+
     return words
 
 
