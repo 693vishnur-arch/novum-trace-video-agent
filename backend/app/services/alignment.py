@@ -135,7 +135,10 @@ def _interpolate_missing_script_words(
     start = float(spoken[x - 1].end)
     end = float(spoken[x].start)
     gap = end - start
-    if gap < 0.04 or gap > 1.0:
+    # Tiny Whisper can omit a word while assigning almost the whole spoken
+    # interval to its neighboring tokens. A very small positive gap is still
+    # usable when match_script has already established strong textual anchors.
+    if gap < 0.005 or gap > 1.0:
         return None
 
     weights = [max(len(normalized(token)), 1) for token in tokens[i:j]]
