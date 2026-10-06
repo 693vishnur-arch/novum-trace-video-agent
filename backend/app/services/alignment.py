@@ -356,7 +356,35 @@ def _transcribe_chunks(model, audio: Path) -> list[dict]:
                 break
             cursor += stride_seconds * rate
 
-    return words
+    # Different overlapping Whisper windows can shift boundary timestamps by a
+    # few hundred milliseconds. Sort on the original PCM timeline, collapse
+    # duplicate estimates of the same spoken word, and trim tiny cross-window
+    # overlaps so validate_words receives a strictly monotonic sequence.
+    words.sort(key=lambda item: (float(item["start"]), float(item["end"])))
+    cleaned: list[dict] = []
+    for item in words:
+        if not cleaned:
+            cleaned.append(item)
+            continue
+
+        previous = cleaned[-1]
+        prev_mid = (float(previous["start"]) + float(previous["end"])) / 2.0
+        item_mid = (float(item["start"]) + float(item["end"])) / 2.0
+        if (normalized(str(previous["text"])) == normalized(str(item["text"]))
+                and abs(item_mid - prev_mid) < 0.8):
+            # Same boundary word recognized by both overlapping windows.
+            continue
+
+        if float(item["start"]) < float(previous["end"]):
+            if float(item["end"]) <= float(previous["end"]):
+                # Fully enclosed timestamp is another overlap artifact.
+                continue
+            item = dict(item)
+            item["start"] = float(previous["end"])
+        if float(item["end"]) > float(item["start"]):
+            cleaned.append(item)
+
+    return cleaned
 
 
 def _worker(request: Path, response: Path) -> None:
