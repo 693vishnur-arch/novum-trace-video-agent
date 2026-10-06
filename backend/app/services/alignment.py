@@ -184,6 +184,46 @@ def _has_strong_local_anchors(
     )
 
 
+def _redistribute_local_anchor_span(
+    tokens: list[str],
+    spoken: list[WordTiming],
+    i: int,
+    j: int,
+    x: int,
+    *,
+    anchor_words: int = 4,
+) -> tuple[int, list[WordTiming]] | None:
+    """Re-time a short locally anchored passage when Whisper drops a word.
+
+    If there is no literal timestamp gap for the omitted word, redistribute the
+    measured span covering four exact words before and after the omission. This
+    keeps timing local to the real audio instead of inventing a global estimate.
+    """
+    if i < anchor_words or x < anchor_words or x + anchor_words > len(spoken):
+        return None
+    start_script = i - anchor_words
+    end_script = j + anchor_words
+    start_spoken = x - anchor_words
+    end_spoken = x + anchor_words
+    start = float(spoken[start_spoken].start)
+    end = float(spoken[end_spoken - 1].end)
+    if not (math.isfinite(start) and math.isfinite(end) and end - start > 0.2):
+        return None
+
+    local_tokens = tokens[start_script:end_script]
+    weights = [max(len(normalized(token)), 1) for token in local_tokens]
+    total = sum(weights)
+    cursor = start
+    rebuilt: list[WordTiming] = []
+    for offset, (token, weight) in enumerate(zip(local_tokens, weights)):
+        token_end = end if offset == len(local_tokens) - 1 else cursor + (end - start) * (weight / total)
+        if token_end <= cursor:
+            return None
+        rebuilt.append(WordTiming(token, cursor, token_end))
+        cursor = token_end
+    return anchor_words, rebuilt
+
+
 def _is_repeated_asr_insert(
     script_tokens: list[str],
     inserted_tokens: list[str],
@@ -257,7 +297,14 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
     # lowers the global score even though the remaining narration is correct.
     # Individual unexplainable replace/delete/insert opcodes below still fail.
     result: list[WordTiming] = []
+    skip_script_until = -1
     for tag, i, j, x, y in matcher.get_opcodes():
+        if j <= skip_script_until:
+            continue
+        if i < skip_script_until < j and tag == "equal":
+            offset = skip_script_until - i
+            i += offset
+            x += offset
         if tag == "equal":
             result.extend(WordTiming(tokens[k], spoken[x + k - i].start,
                                      spoken[x + k - i].end) for k in range(i, j))
@@ -267,12 +314,25 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
         ):
             # Recover a tiny ASR omission when either the whole narration is an
             # almost-exact match or this specific passage has strong exact
-            # anchors on both sides. The latter is important for long scripts,
-            # where harmless differences elsewhere can lower the global ratio.
+            # anchors on both sides.
             restored = _interpolate_missing_script_words(tokens, spoken, i, j, x)
             if restored is not None:
                 result.extend(restored)
                 continue
+
+            # Tiny Whisper sometimes gives the neighboring words touching
+            # timestamps, leaving no literal gap for a word that is clearly
+            # present in the audio. When four exact anchors exist on both sides,
+            # rebuild only that local passage from its measured outer span.
+            if _has_strong_local_anchors(a, b, i, j, x):
+                local = _redistribute_local_anchor_span(tokens, spoken, i, j, x)
+                if local is not None:
+                    replace_count, rebuilt = local
+                    if len(result) >= replace_count:
+                        del result[-replace_count:]
+                        result.extend(rebuilt)
+                        skip_script_until = j + replace_count
+                    continue
 
         if tag == "insert" and i == j and _is_repeated_asr_insert(a, b[x:y], i):
             # Ignore a duplicated phrase hallucinated by the recognizer during
