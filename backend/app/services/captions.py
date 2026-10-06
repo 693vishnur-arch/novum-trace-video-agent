@@ -4,6 +4,7 @@ import re
 import textwrap
 from pathlib import Path
 
+from backend.app.config import video_profile
 from backend.app.models import Scene
 
 
@@ -150,20 +151,34 @@ def build_ass(
     ending_question: str,
     total_duration: float,
     brand: str = "NOVUM TRACE",
+    video_mode: str = "short",
 ) -> None:
-    header = """[Script Info]
+    profile = video_profile(video_mode)
+    width = int(profile["width"])
+    height = int(profile["height"])
+    long_mode = video_mode == "long"
+    if long_mode:
+        caption_size, hook_size, ending_size, brand_size = 34, 54, 46, 24
+        caption_margin_v, brand_margin_v = 70, 42
+        caption_margin_lr = 110
+    else:
+        caption_size, hook_size, ending_size, brand_size = 45, 54, 48, 32
+        caption_margin_v, brand_margin_v = 235, 150
+        caption_margin_lr = 75
+
+    header = f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 720
-PlayResY: 1280
+PlayResX: {width}
+PlayResY: {height}
 ScaledBorderAndShadow: yes
 WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,DejaVu Sans,45,&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,0,0,1,4,1,2,75,75,235,1
-Style: Hook,DejaVu Sans,54,&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,1,0,1,5,2,5,70,70,0,1
-Style: Ending,DejaVu Sans,48,&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,1,0,1,5,2,5,70,70,0,1
-Style: Brand,DejaVu Sans,32,&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,2,0,1,3,1,2,70,70,150,1
+Style: Caption,DejaVu Sans,{caption_size},&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,0,0,1,4,1,2,{caption_margin_lr},{caption_margin_lr},{caption_margin_v},1
+Style: Hook,DejaVu Sans,{hook_size},&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,1,0,1,5,2,5,90,90,0,1
+Style: Ending,DejaVu Sans,{ending_size},&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,1,0,1,5,2,5,90,90,0,1
+Style: Brand,DejaVu Sans,{brand_size},&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,2,0,1,3,1,2,90,90,{brand_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -188,28 +203,37 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # Suppress body subtitles beneath the end card so the final question is not
     # rendered twice at the same time.
     for scene in scenes:
-        for start, end, chunk in _caption_events_for_scene(scene):
+        if long_mode and scene.index % 4 != 0:
+            continue
+        scene_events = _caption_events_for_scene(scene)
+        if long_mode and scene_events:
+            # Long-form uses one concise key statement per ~4 scenes rather
+            # than subtitle-style captions over every spoken sentence.
+            scene_events = scene_events[:1]
+        for start, end, chunk in scene_events:
             if ending_start is not None:
                 if start >= ending_start:
                     continue
                 end = min(end, ending_start)
                 if end <= start:
                     continue
-            text = ass_escape(wrap_caption(chunk, width=22, max_lines=2))
+            wrap_width = 42 if long_mode else 22
+            text = ass_escape(wrap_caption(chunk, width=wrap_width, max_lines=2))
             events.append(
                 f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{text}"
             )
 
     if hook.strip():
         hook_end = min(3.0, total_duration)
-        hook_text = ass_escape(wrap_caption(hook.upper(), width=18, max_lines=3))
+        hook_width = 34 if long_mode else 18
+        hook_text = ass_escape(wrap_caption(hook.upper(), width=hook_width, max_lines=3))
         events.append(
             f"Dialogue: 2,{ass_time(0)},{ass_time(hook_end)},Hook,,0,0,0,,{hook_text}"
         )
 
     if ending_start is not None:
         ending_text = ass_escape(
-            wrap_caption(ending_question.upper(), width=18, max_lines=3)
+            wrap_caption(ending_question.upper(), width=(34 if long_mode else 18), max_lines=3)
         )
         events.append(
             f"Dialogue: 3,{ass_time(ending_start)},{ass_time(total_duration)},Ending,,0,0,0,,{ending_text}"
