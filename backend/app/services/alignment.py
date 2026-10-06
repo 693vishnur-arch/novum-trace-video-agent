@@ -211,8 +211,10 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
     script_chars = "".join(_canonical_token(token) for token in tokens)
     spoken_chars = "".join(_canonical_token(word.text) for word in spoken)
     char_ratio = SequenceMatcher(None, script_chars, spoken_chars, autojunk=False).ratio()
-    if token_ratio < 0.75 and char_ratio < 0.88:
-        raise AlignmentError("The script does not closely match the narration. Check the script and audio, then retry.")
+    # Do not reject on the global similarity score before inspecting the
+    # diff. A tiny speech model can duplicate a whole previous sentence, which
+    # lowers the global score even though the remaining narration is correct.
+    # Individual unexplainable replace/delete/insert opcodes below still fail.
     result: list[WordTiming] = []
     for tag, i, j, x, y in matcher.get_opcodes():
         if tag == "equal":
