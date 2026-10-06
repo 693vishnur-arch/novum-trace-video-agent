@@ -144,7 +144,11 @@ def test_absolute_frame_boundaries_do_not_accumulate_rounding(monkeypatch, tmp_p
     scenes = plan_aligned_scenes(9.013, words, script, [], 8)
     durations = []
     commands = []
-    monkeypatch.setattr(renderer, "_render_scene", lambda src, out, duration: durations.append(duration))
+    monkeypatch.setattr(
+        renderer,
+        "_render_scene",
+        lambda src, out, duration, **kwargs: durations.append(duration),
+    )
     monkeypatch.setattr(renderer, "run", lambda cmd: commands.append(cmd))
     monkeypatch.setattr(
         renderer,
