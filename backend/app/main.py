@@ -111,7 +111,7 @@ def _download_stock_for_scenes(
             "No stock API key is configured. Add PEXELS_API_KEY and/or PIXABAY_API_KEY in Render."
         )
 
-    max_clips = min(max(int(max_clips or 1), 1), 8)
+    max_clips = min(max(int(max_clips or 1), 1), 36)
     selections = _parse_stock_selections(selections_raw)
     upload_dir = project_dir / "uploads"
     credits: list[dict[str, Any]] = []
@@ -468,7 +468,7 @@ def create_project(
 
     state = {
         "project_id": project_id,
-        "title": title.strip() or "Novum Trace Short",
+        "title": title.strip() or ("Novum Trace Video" if video_mode == "long" else "Novum Trace Short"),
         "prompt": prompt.strip(),
         "script": script.strip(),
         "status": "queued",
