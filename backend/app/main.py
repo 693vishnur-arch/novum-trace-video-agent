@@ -11,7 +11,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.config import ALLOWED_AUDIO, ALLOWED_IMAGE, ALLOWED_VIDEO, DATA_DIR, STATIC_DIR
+from backend.app.config import ALLOWED_AUDIO, ALLOWED_IMAGE, ALLOWED_VIDEO, DATA_DIR, STATIC_DIR, video_profile
 from backend.app.services.budget import GenerationBudget
 from backend.app.services.media import probe_duration
 from backend.app.services.metadata import build_metadata
@@ -35,7 +35,7 @@ from backend.app.services.stock import (
 )
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
-app = FastAPI(title="Novum Trace Video Agent", version="1.4.5")
+app = FastAPI(title="Novum Trace Video Agent", version="1.5.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _project_lock = threading.Lock()
 
@@ -211,6 +211,7 @@ def _process_project(
     stock_max_clips: int,
     stock_selections: str,
     prefer_portrait: bool,
+    video_mode: str,
 ) -> None:
     project_dir = DATA_DIR / project_id
     try:
@@ -235,7 +236,13 @@ def _process_project(
         state.update({"status": "aligning narration", "progress": 18})
         save_state(project_dir, state)
         words = align_narration(narration_clean, script, total_duration, work_dir)
-        scene_limit = stock_max_clips if visual_source in {"stock_auto", "stock_mix"} else 8
+        profile = video_profile(video_mode)
+        profile_scene_limit = int(profile["max_scenes"])
+        scene_limit = (
+            min(stock_max_clips, profile_scene_limit)
+            if visual_source in {"stock_auto", "stock_mix"}
+            else profile_scene_limit
+        )
         scenes = plan_aligned_scenes(total_duration, words, script, planning_clips, scene_limit)
         state["timing_method"] = "speech_word_timestamps"
 
@@ -292,6 +299,7 @@ def _process_project(
             ending_question=ending,
             music_path=music_path,
             narration_prepared=True,
+            video_mode=video_mode,
         )
 
         metadata = build_metadata(title, prompt, script)
@@ -339,7 +347,7 @@ def stock_status() -> dict[str, Any]:
     return {
         "configured": stock_api_status(),
         "providers": ["pexels", "pixabay"],
-        "max_stock_clips": 8,
+        "max_stock_clips": 36,
     }
 
 
@@ -351,7 +359,12 @@ def stock_search_preview(
     stock_providers: str = Form("pexels,pixabay"),
     stock_max_clips: int = Form(8),
     prefer_portrait: bool = Form(True),
+    video_mode: str = Form("short"),
 ) -> dict[str, Any]:
+    if video_mode not in {"short", "long"}:
+        video_mode = "short"
+    max_allowed = int(video_profile(video_mode)["max_scenes"])
+    stock_max_clips = min(max(int(stock_max_clips or 1), 1), max_allowed)
     queries = build_review_queries(
         script,
         title,
@@ -411,12 +424,18 @@ def create_project(
     stock_max_clips: int = Form(8),
     stock_selections: str = Form(""),
     prefer_portrait: bool = Form(True),
+    video_mode: str = Form("short"),
     narration: UploadFile = File(...),
     clips: list[UploadFile] = File(default=[]),
     music: UploadFile | None = File(default=None),
 ) -> dict[str, object]:
     if visual_source not in {"upload", "stock_auto", "stock_mix"}:
         raise HTTPException(status_code=400, detail="Invalid visual source")
+    if video_mode not in {"short", "long"}:
+        raise HTTPException(status_code=400, detail="Invalid video mode")
+    profile = video_profile(video_mode)
+    max_mode_scenes = int(profile["max_scenes"])
+    stock_max_clips = min(max(int(stock_max_clips or 1), 1), max_mode_scenes)
 
     project_id, project_dir = create_project_dir()
     upload_dir = project_dir / "uploads"
@@ -458,9 +477,12 @@ def create_project(
         "updated_at": now_iso(),
         "duration": None,
         "visual_count": len(visual_paths),
+        "video_mode": video_mode,
+        "output_width": int(profile["width"]),
+        "output_height": int(profile["height"]),
         "visual_source": visual_source,
         "stock_providers": normalize_providers(stock_providers),
-        "stock_max_clips": min(max(stock_max_clips, 1), 8),
+        "stock_max_clips": stock_max_clips,
         "stock_clip_count": 0,
         "stock_credits": [],
         "stock_provider_status": stock_api_status(),
@@ -495,6 +517,7 @@ def create_project(
         stock_max_clips,
         stock_selections,
         prefer_portrait,
+        video_mode,
     )
     return {"project_id": project_id, "status": "queued"}
 
