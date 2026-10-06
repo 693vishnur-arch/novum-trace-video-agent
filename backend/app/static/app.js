@@ -10,6 +10,7 @@ const actions = $('actions');
 const metadataBox = $('metadataBox');
 const creditsBox = $('creditsBox');
 const creditsLink = $('creditsLink');
+const videoMode = $('video_mode');
 const visualSource = $('visual_source');
 const selectionMode = $('stock_selection_mode');
 const stockProviders = $('stock_providers');
@@ -56,6 +57,28 @@ function providerLabel(name) {
   return name === 'pexels' ? 'Pexels' : name === 'pixabay' ? 'Pixabay' : name;
 }
 
+function createLabel() {
+  return videoMode.value === 'long' ? 'Create Long Video' : 'Create Short';
+}
+
+function updateVideoMode() {
+  const longMode = videoMode.value === 'long';
+  $('creatorHeading').textContent = longMode ? 'Create Long Video' : 'Create Short';
+  $('modeHelp').textContent = longMode
+    ? '16:9 documentary edit with up to 36 matched scenes. Optimized for the current Render instance.'
+    : 'Fast vertical edit with up to 8 scenes.';
+  $('presetName').textContent = longMode ? 'Novum Trace Long Video' : 'Novum Trace Short';
+  $('presetFormat').textContent = longMode ? '1280 x 720' : '720 x 1280';
+  stockMaxClips.max = longMode ? '36' : '8';
+  if (longMode && Number(stockMaxClips.value) <= 8) stockMaxClips.value = '36';
+  if (!longMode && Number(stockMaxClips.value) > 8) stockMaxClips.value = '8';
+  preferPortrait.checked = !longMode;
+  createButton.textContent = createLabel();
+  stockSelections.value = '';
+  stockCandidates.innerHTML = '';
+  stockCandidates.classList.add('hidden');
+}
+
 function updateStockControls() {
   const enabled = visualSource.value !== 'upload';
   findStockButton.disabled = !enabled;
@@ -70,6 +93,10 @@ function updateStockControls() {
     stockCandidates.classList.remove('hidden');
   }
 }
+videoMode.addEventListener('change', function () {
+  updateVideoMode();
+  updateStockControls();
+});
 visualSource.addEventListener('change', updateStockControls);
 selectionMode.addEventListener('change', updateStockControls);
 
@@ -160,6 +187,7 @@ findStockButton.addEventListener('click', async function () {
     data.set('stock_providers', stockProviders.value);
     data.set('stock_max_clips', stockMaxClips.value);
     data.set('prefer_portrait', preferPortrait.checked ? 'true' : 'false');
+    data.set('video_mode', videoMode.value);
     const r = await fetch('/api/stock/search', {method:'POST', body:data});
     const p = await r.json();
     if (!r.ok) throw new Error(p.detail || 'Stock search failed');
@@ -210,12 +238,14 @@ function applyState(state) {
     renderError.textContent = state.error || 'Render failed.';
     renderError.classList.remove('hidden');
     createButton.disabled = false;
-    createButton.textContent = 'Create Short';
+    createButton.textContent = createLabel();
     clearInterval(pollTimer);
   }
 
   if (state.status === 'complete') {
     preview.src = '/api/projects/' + state.project_id + '/video?t=' + Date.now();
+    preview.style.aspectRatio = state.video_mode === 'long' ? '16 / 9' : '9 / 16';
+    preview.style.maxHeight = state.video_mode === 'long' ? 'none' : '560px';
     preview.classList.remove('hidden');
     actions.classList.remove('hidden');
     $('downloadLink').href = '/api/projects/' + state.project_id + '/download';
@@ -296,9 +326,9 @@ async function loadHistory() {
         : '<span></span>';
       return '<div class="history-item"><div><div class="history-title">' +
         esc(p.title || p.project_id) + '</div><div class="history-meta">' +
-        esc(p.project_id) + ' · ' + fmtDuration(p.duration) + ' · ' +
-        (p.visual_count || 0) + ' visuals · ' + (p.stock_clip_count || 0) +
-        ' stock</div></div><span class="status-chip">' + esc(p.status || '') +
+        esc(p.project_id) + ' · ' + (p.video_mode === 'long' ? 'Long' : 'Short') + ' · ' +
+        fmtDuration(p.duration) + ' · ' + (p.visual_count || 0) + ' visuals · ' +
+        (p.stock_clip_count || 0) + ' stock</div></div><span class="status-chip">' + esc(p.status || '') +
         '</span>' + action + '</div>';
     }).join('');
   } catch (_) {
@@ -314,6 +344,7 @@ $('copyDescription').addEventListener('click', function () {
   navigator.clipboard.writeText($('metadataDescription').textContent || '');
 });
 
+updateVideoMode();
 updateStockControls();
 loadStockStatus();
 loadHistory();
