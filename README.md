@@ -1,6 +1,25 @@
-# Novum Trace Video Agent V1.4.5
+# Novum Trace Video Agent V1.5
 
-A self-hosted automatic editor for vertical YouTube Shorts.
+A self-hosted automatic editor for YouTube Shorts and long-form videos.
+
+## Dual video modes
+
+**Short mode** keeps the existing workflow unchanged:
+- 720x1280 vertical 9:16
+- up to 8 matched stock scenes
+- portrait stock preference
+- speech-synced full captions
+- hook + ending card
+
+**Long Video mode** adds:
+- 1280x720 landscape 16:9
+- up to 36 unique matched stock scenes
+- landscape stock preference
+- sparse documentary-style key captions
+- the same narration alignment, A/V validation, stock credits, optional music, and project history
+- automatic stock selection by default so a long script does not require reviewing dozens of scenes
+
+Long mode uses 720p rather than 1080p on the current free Render instance to keep memory, CPU, temporary disk use, and render time manageable. The output profile is centralized in `backend/app/config.py`, so it can be raised to 1920x1080 after moving to stronger compute.
 
 ## Speech-synchronized timing
 
