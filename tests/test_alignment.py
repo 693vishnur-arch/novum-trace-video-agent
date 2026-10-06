@@ -236,7 +236,7 @@ def test_long_script_single_word_omission_uses_local_anchors():
         "OpenAI said the surrounding security controls also needed improvement across future evaluations. "
         "The rest of this long narration continues with enough matching words to make local context reliable."
     )
-    spoken_text = script.replace(" the incident better.", " better.")
+    spoken_text = script.replace(" incident better.", " better.")
     words = measured(spoken_text, start=0.5, step=0.22)
     aligned = match_script(script, words, 40)
     assert [word.text for word in aligned] == script.split()
