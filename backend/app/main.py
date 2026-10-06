@@ -302,7 +302,7 @@ def _process_project(
             video_mode=video_mode,
         )
 
-        metadata = build_metadata(title, prompt, script)
+        metadata = build_metadata(title, prompt, script, video_mode=video_mode)
         state.update({
             "status": "complete",
             "progress": 100,
