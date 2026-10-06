@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import wave
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -277,28 +278,81 @@ def align_narration(audio: Path, script: str, duration: float, work_dir: Path) -
         payload = json.loads(response.read_text(encoding="utf-8"))
         spoken = [WordTiming(**word) for word in payload]
         return match_script(script, spoken, duration)
+    except subprocess.CalledProcessError as exc:
+        reason = ("The speech worker was killed, possibly because the server ran out of memory."
+                  if exc.returncode in {-9, 137} else
+                  f"The speech worker exited with code {exc.returncode}. Check the server logs.")
+        print(f"Audio alignment worker failed: {exc.stderr}", file=sys.stderr, flush=True)
+        raise AlignmentError(f"Audio alignment failed. {reason}") from exc
     except (subprocess.SubprocessError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise AlignmentError("Audio alignment failed. Check that the speech model is installed and enough memory is available, then retry.") from exc
+
+
+def _transcribe_chunks(model, audio: Path) -> list[dict]:
+    """Bound decoding/VAD/features to 30 seconds, even for long narrations.
+
+    Keep five seconds of lookahead and resume at the last accepted word's end
+    so an arbitrary chunk boundary never truncates a word we keep. All offsets
+    remain on the original audio sample timeline.
+    """
+    import numpy as np
+
+    words = []
+    with wave.open(str(audio), "rb") as source:
+        rate = source.getframerate()
+        if source.getnchannels() != 1 or source.getsampwidth() != 2 or rate != 16000:
+            raise AlignmentError("Alignment requires mono 16 kHz PCM audio.")
+        total = source.getnframes()
+        cursor = 0
+        while cursor < total:
+            source.setpos(cursor)
+            frames = min(30 * rate, total - cursor)
+            samples = np.frombuffer(source.readframes(frames), dtype="<i2").astype(np.float32)
+            samples /= 32768.0
+            segments, _ = model.transcribe(
+                samples, word_timestamps=True, beam_size=5,
+                condition_on_previous_text=False, vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 250},
+            )
+            final = cursor + frames >= total
+            cutoff = frames / rate if final else 25.0
+            accepted = []
+            for segment in segments:
+                for word in segment.words or []:
+                    if (word.word.strip() and math.isfinite(word.start)
+                            and math.isfinite(word.end)
+                            and 0 <= word.start < word.end <= cutoff):
+                        accepted.append({"text": word.word.strip(),
+                                         "start": cursor / rate + word.start,
+                                         "end": cursor / rate + word.end})
+            words.extend(accepted)
+            if final:
+                break
+            next_cursor = round(accepted[-1]["end"] * rate) if accepted else cursor + 25 * rate
+            if next_cursor <= cursor:
+                raise AlignmentError("Speech alignment did not advance through the audio.")
+            cursor = next_cursor
+    return words
 
 
 def _worker(request: Path, response: Path) -> None:
     from faster_whisper import WhisperModel
 
     payload = json.loads(request.read_text(encoding="utf-8"))
-    model = WhisperModel(os.getenv("WHISPER_MODEL", "tiny.en"), device="cpu",
-                         compute_type="int8", cpu_threads=1, num_workers=1)
-    segments, _ = model.transcribe(
-        payload["audio"],
-        word_timestamps=True,
-        beam_size=5,
-        condition_on_previous_text=False,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 250},
-    )
-    words = [{"text": word.word.strip(), "start": word.start, "end": word.end}
-             for segment in segments for word in (segment.words or [])
-             if word.word.strip() and word.end > word.start]
-    response.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
+    pcm = request.with_name("alignment_mono.wav")
+    try:
+        # FFmpeg streams to disk; never decode the entire stereo narration in RAM.
+        subprocess.run([
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-threads", "1",
+            "-i", payload["audio"], "-vn", "-ac", "1", "-ar", "16000",
+            "-c:a", "pcm_s16le", str(pcm),
+        ], check=True, capture_output=True, text=True, timeout=120)
+        model = WhisperModel(os.getenv("WHISPER_MODEL", "tiny.en"), device="cpu",
+                             compute_type="int8", cpu_threads=1, num_workers=1)
+        words = _transcribe_chunks(model, pcm)
+        response.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
+    finally:
+        pcm.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

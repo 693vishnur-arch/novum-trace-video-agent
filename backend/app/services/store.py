@@ -31,7 +31,9 @@ def project_file(project_dir: Path) -> Path:
 def save_state(project_dir: Path, state: dict[str, Any]) -> None:
     state["updated_at"] = now_iso()
     with _LOCK:
-        project_file(project_dir).write_text(json.dumps(state, indent=2), encoding="utf-8")
+        temporary = project_dir / "project.json.tmp"
+        temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        temporary.replace(project_file(project_dir))
 
 
 def load_state(project_id: str) -> dict[str, Any]:
