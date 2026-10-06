@@ -62,14 +62,21 @@ def test_contraction_tokenization_difference_is_allowed():
 
 
 def test_single_missing_asr_word_is_interpolated_from_measured_gap():
-    words = measured("Google sent chips into orbit today.")
-    aligned = match_script("Google sent AI chips into orbit today.", words, 8)
-    assert [word.text for word in aligned] == [
-        "Google", "sent", "AI", "chips", "into", "orbit", "today."
-    ]
-    ai = aligned[2]
-    assert ai.start == pytest.approx(words[1].end)
-    assert ai.end == pytest.approx(words[2].start)
+    spoken_text = (
+        "Inside the mission is testing Google hardware under radiation temperatures "
+        "and the physical stress of spaceflight while the rest of the narration matches."
+    )
+    script = (
+        "Inside the mission is testing Google hardware under radiation extreme temperatures "
+        "and the physical stress of spaceflight while the rest of the narration matches."
+    )
+    words = measured(spoken_text, step=0.25)
+    aligned = match_script(script, words, 12)
+    assert [word.text for word in aligned] == script.split()
+    extreme_index = script.split().index("extreme")
+    extreme = aligned[extreme_index]
+    assert extreme.start == pytest.approx(words[extreme_index - 1].end)
+    assert extreme.end == pytest.approx(words[extreme_index].start)
 
 
 def test_missing_script_word_without_measured_gap_reports_exact_mismatch():
