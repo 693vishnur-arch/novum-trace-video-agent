@@ -73,6 +73,7 @@ function updateVideoMode() {
   if (longMode && Number(stockMaxClips.value) <= 8) stockMaxClips.value = '36';
   if (!longMode && Number(stockMaxClips.value) > 8) stockMaxClips.value = '8';
   preferPortrait.checked = !longMode;
+  if (longMode) selectionMode.value = 'auto';
   createButton.textContent = createLabel();
   stockSelections.value = '';
   stockCandidates.innerHTML = '';
@@ -256,7 +257,7 @@ function applyState(state) {
       metadataBox.classList.remove('hidden');
     }
     createButton.disabled = false;
-    createButton.textContent = 'Create Short';
+    createButton.textContent = createLabel();
     clearInterval(pollTimer);
     loadHistory();
   }
@@ -308,7 +309,7 @@ form.addEventListener('submit', async function (event) {
     formError.textContent = err.message;
     formError.classList.remove('hidden');
     createButton.disabled = false;
-    createButton.textContent = 'Create Short';
+    createButton.textContent = createLabel();
   }
 });
 
