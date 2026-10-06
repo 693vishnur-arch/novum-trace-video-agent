@@ -28,9 +28,11 @@ def test_long_audio_is_bounded_and_preserves_boundary_words(tmp_path):
                 words = [word("first", 1, 2), word("edge", 24, 24.8),
                          word("crossing", 24.9, 25.4)]
             elif len(calls) == 2:
-                words = [word("crossing", .1, .6), word("later", 24, 24.8)]
+                # Second window starts at 20s, so the crossing word is now
+                # comfortably inside the 5s overlap rather than on an edge.
+                words = [word("crossing", 4.9, 5.4), word("later", 24, 24.8)]
             else:
-                words = [word("last", 10, 11)]
+                words = [word("last", 20, 20.6)]
             return iter([SimpleNamespace(words=words)]), None
     result = _transcribe_chunks(Model(), audio_file(tmp_path, 65))
     assert max(calls) <= 30 * 16000
@@ -46,7 +48,10 @@ def test_ten_minutes_of_silence_advances_without_full_audio_allocation(tmp_path)
             calls.append(len(samples))
             return iter([]), None
     assert _transcribe_chunks(Model(), audio_file(tmp_path, 600)) == []
-    assert len(calls) == 24
+    # 20-second stride gives each owned region 5 seconds of context on both
+    # sides; this intentionally trades a few more tiny-model calls for reliable
+    # boundary-word recognition.
+    assert len(calls) == 30
     assert max(calls) == 30 * 16000
 
 
