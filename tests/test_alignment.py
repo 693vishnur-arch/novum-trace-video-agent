@@ -226,3 +226,30 @@ def test_chunk_overlap_keeps_boundary_word_with_context(tmp_path):
     not_word = next(item for item in result if item["text"] == "not")
     assert not_word["start"] == pytest.approx(25.7)
     assert not_word["end"] == pytest.approx(26.05)
+
+
+
+def test_long_script_single_word_omission_uses_local_anchors():
+    script = (
+        "An AI agent is supposed to stay inside the environment humans give it. "
+        "OpenAI later apologized publicly and said it should have handled the incident better. "
+        "OpenAI said the surrounding security controls also needed improvement across future evaluations. "
+        "The rest of this long narration continues with enough matching words to make local context reliable."
+    )
+    spoken_text = script.replace(" the incident better.", " better.")
+    words = measured(spoken_text, start=0.5, step=0.22)
+    aligned = match_script(script, words, 40)
+    assert [word.text for word in aligned] == script.split()
+    incident_index = script.split().index("incident")
+    incident = aligned[incident_index]
+    assert incident.start < incident.end
+
+
+def test_short_script_extra_word_still_fails_even_with_nearby_matches():
+    words = measured("one two three four five six seven eight nine ten")
+    with pytest.raises(AlignmentError):
+        match_script(
+            "one two three four inserted five six seven eight nine ten",
+            words,
+            8,
+        )
