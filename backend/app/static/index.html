@@ -12,16 +12,16 @@
       <div>
         <div class="eyebrow">NOVUM TRACE</div>
         <h1>Video Agent</h1>
-        <p>Narration + script -> matched stock clips -> finished 9:16 YouTube Short.</p>
+        <p>Narration + script -> matched stock clips -> finished YouTube Short or long-form video.</p>
       </div>
-      <div class="pill"><span class="dot"></span> V1.4.5 ASR repetition guard</div>
+      <div class="pill"><span class="dot"></span> V1.5 Shorts + Long Video</div>
     </header>
 
     <main class="grid">
       <section class="panel creator">
         <div class="panel-heading">
           <div>
-            <h2>Create Short</h2>
+            <h2 id="creatorHeading">Create Short</h2>
             <p>FFmpeg editing stays local. AI video generation stays off.</p>
           </div>
           <div class="budget-card">
@@ -33,8 +33,12 @@
         <form id="createForm">
           <div class="field-row two">
             <label>
-              <span>Project title</span>
-              <input id="title" name="title" required placeholder="OpenAI Agent Internet Sandbox" />
+              <span>Video mode</span>
+              <select id="video_mode" name="video_mode">
+                <option value="short" selected>YouTube Short · 9:16</option>
+                <option value="long">Long YouTube Video · 16:9</option>
+              </select>
+              <small id="modeHelp">Fast vertical edit with up to 8 scenes.</small>
             </label>
             <label>
               <span>Max AI generations</span>
@@ -42,6 +46,11 @@
               <small>Stock search does not count as AI generation.</small>
             </label>
           </div>
+
+          <label>
+            <span>Project title</span>
+            <input id="title" name="title" required placeholder="OpenAI Agent Internet Sandbox" />
+          </label>
 
           <label>
             <span>Editing prompt</span>
@@ -102,7 +111,7 @@
               </label>
               <label>
                 <span>Maximum stock clips</span>
-                <input id="stock_max_clips" name="stock_max_clips" type="number" min="1" max="8" value="8" />
+                <input id="stock_max_clips" name="stock_max_clips" type="number" min="1" max="36" value="8" />
               </label>
               <label class="check-label">
                 <span>Framing</span>
@@ -154,8 +163,8 @@
           </div>
 
           <div class="preset">
-            <div><span>Preset</span><strong>Novum Trace Short</strong></div>
-            <div><span>Format</span><strong>720 x 1280</strong></div>
+            <div><span>Preset</span><strong id="presetName">Novum Trace Short</strong></div>
+            <div><span>Format</span><strong id="presetFormat">720 x 1280</strong></div>
             <div><span>FPS</span><strong>24</strong></div>
             <div><span>Renderer</span><strong>FFmpeg</strong></div>
           </div>
