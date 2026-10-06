@@ -151,6 +151,36 @@ def _interpolate_missing_script_words(
     return result
 
 
+def _has_strong_local_anchors(
+    script_tokens: list[str],
+    spoken_tokens: list[str],
+    i: int,
+    j: int,
+    x: int,
+    *,
+    anchor_words: int = 4,
+) -> bool:
+    """Allow a tiny ASR omission only inside a long, locally exact passage.
+
+    Long narrations can contain enough harmless ASR differences elsewhere to
+    lower the global similarity ratio. For a one-word omission, four exact
+    tokens immediately before and after are stronger evidence than the global
+    score and still prevent short/different scripts from being silently fixed.
+    """
+    if len(script_tokens) < 30 or j - i > 2:
+        return False
+    if i < anchor_words or x < anchor_words:
+        return False
+    if i + (j - i) + anchor_words > len(script_tokens):
+        return False
+    if x + anchor_words > len(spoken_tokens):
+        return False
+    return (
+        script_tokens[i - anchor_words:i] == spoken_tokens[x - anchor_words:x]
+        and script_tokens[j:j + anchor_words] == spoken_tokens[x:x + anchor_words]
+    )
+
+
 def _is_repeated_asr_insert(
     script_tokens: list[str],
     inserted_tokens: list[str],
@@ -229,11 +259,13 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
             result.extend(WordTiming(tokens[k], spoken[x + k - i].start,
                                      spoken[x + k - i].end) for k in range(i, j))
             continue
-        if tag == "delete" and x == y and char_ratio >= 0.97:
-            # Only recover an ASR omission when the entire narration otherwise
-            # matches the script almost exactly. This avoids inventing words for
-            # a genuinely different/short script while tolerating one missed
-            # word in a long, matching ElevenLabs narration.
+        if tag == "delete" and x == y and (
+            char_ratio >= 0.97 or _has_strong_local_anchors(a, b, i, j, x)
+        ):
+            # Recover a tiny ASR omission when either the whole narration is an
+            # almost-exact match or this specific passage has strong exact
+            # anchors on both sides. The latter is important for long scripts,
+            # where harmless differences elsewhere can lower the global ratio.
             restored = _interpolate_missing_script_words(tokens, spoken, i, j, x)
             if restored is not None:
                 result.extend(restored)
