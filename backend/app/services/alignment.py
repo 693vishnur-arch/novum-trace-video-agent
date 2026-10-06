@@ -164,6 +164,13 @@ def _is_repeated_asr_insert(
     if len(inserted_tokens) < 4:
         return False
     length = len(inserted_tokens)
+
+    # SequenceMatcher may choose the second copy of a duplicated phrase as the
+    # real match, leaving the first copy as an insertion at the same script
+    # position. In that case the inserted phrase equals the upcoming script.
+    if script_tokens[script_index:script_index + length] == inserted_tokens:
+        return True
+
     earliest = max(0, script_index - 40)
     latest = script_index - length
     for start in range(earliest, latest + 1):
