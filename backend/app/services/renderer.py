@@ -12,6 +12,7 @@ from backend.app.config import (
     OUTPUT_FPS,
     OUTPUT_HEIGHT,
     OUTPUT_WIDTH,
+    video_profile,
 )
 from backend.app.models import Scene
 from backend.app.services.captions import build_ass
@@ -20,10 +21,10 @@ from backend.app.services.media import is_image, is_video, probe_streams, run
 VOICE_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000:async=0:first_pts=0,asetpts=N/SR/TB"
 
 
-def _video_filter() -> str:
+def _video_filter(width: int = OUTPUT_WIDTH, height: int = OUTPUT_HEIGHT) -> str:
     return (
-        f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},setsar=1,fps={OUTPUT_FPS},format=yuv420p"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1,fps={OUTPUT_FPS},format=yuv420p"
     )
 
 
@@ -37,16 +38,23 @@ def _encode_args() -> list[str]:
     ]
 
 
-def _render_scene(source: Path | None, output: Path, duration: float) -> None:
+def _render_scene(
+    source: Path | None,
+    output: Path,
+    duration: float,
+    *,
+    width: int = OUTPUT_WIDTH,
+    height: int = OUTPUT_HEIGHT,
+) -> None:
     duration = max(duration, 1 / OUTPUT_FPS)
     frames = max(1, round(duration * OUTPUT_FPS))
-    vf = _video_filter()
+    vf = _video_filter(width, height)
 
     if source is None:
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-f", "lavfi",
-            "-i", f"color=c=0x070b12:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={OUTPUT_FPS}",
+            "-i", f"color=c=0x070b12:s={width}x{height}:r={OUTPUT_FPS}",
             "-frames:v", str(frames), "-an",
             *_encode_args(),
             str(output),
@@ -178,7 +186,11 @@ def render_video(
     music_path: Path | None = None,
     music_volume: float = DEFAULT_MUSIC_VOLUME,
     narration_prepared: bool = False,
+    video_mode: str = "short",
 ) -> Path:
+    profile = video_profile(video_mode)
+    width = int(profile["width"])
+    height = int(profile["height"])
     work_dir = project_dir / "work"
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -195,7 +207,13 @@ def render_video(
                      else round(scene.end * OUTPUT_FPS))
         if end_frame <= frame_cursor:
             raise ValueError("Scene is shorter than one output frame")
-        _render_scene(source, scene_file, (end_frame - frame_cursor) / OUTPUT_FPS)
+        _render_scene(
+            source,
+            scene_file,
+            (end_frame - frame_cursor) / OUTPUT_FPS,
+            width=width,
+            height=height,
+        )
         frame_cursor = end_frame
         scene_files.append(scene_file)
 
@@ -203,7 +221,14 @@ def render_video(
     _concat_scenes(scene_files, concat_video, work_dir)
 
     captions = project_dir / "captions.ass"
-    build_ass(scenes, captions, hook, ending_question, total_duration)
+    build_ass(
+        scenes,
+        captions,
+        hook,
+        ending_question,
+        total_duration,
+        video_mode=video_mode,
+    )
 
     narration_clean = narration_path if narration_prepared else _prepare_narration(narration_path, work_dir)
     narration_master = _normalize_narration(narration_clean, work_dir, total_duration)
