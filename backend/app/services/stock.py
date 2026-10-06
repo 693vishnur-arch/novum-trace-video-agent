@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 PEXELS_API = "https://api.pexels.com/v1/videos"
 PIXABAY_API = "https://pixabay.com/api/videos/"
-USER_AGENT = "NovumTraceVideoAgent/1.4.2"
+USER_AGENT = "NovumTraceVideoAgent/1.5.0"
 MAX_DOWNLOAD_BYTES = 60 * 1024 * 1024
 DEFAULT_RESULTS_PER_PROVIDER = 6
 
@@ -286,7 +286,7 @@ def build_review_queries(
     max_clips: int = 6,
     prompt: str = "",
 ) -> list[dict[str, Any]]:
-    max_clips = min(max(int(max_clips or 1), 1), 8)
+    max_clips = min(max(int(max_clips or 1), 1), 36)
     from backend.app.services.planner import visual_groups
 
     groups = visual_groups(script or title or "technology news", max_clips)
@@ -314,9 +314,12 @@ def _choose_pexels_file(video: dict[str, Any], prefer_portrait: bool = True) -> 
 
         portrait = height >= width
         min_dim = min(width, height)
-        target_penalty = abs(width - 720) + abs(height - 1280)
-        if not portrait:
-            target_penalty += 1500 if prefer_portrait else 100
+        target_width, target_height = ((720, 1280) if prefer_portrait else (1280, 720))
+        target_penalty = abs(width - target_width) + abs(height - target_height)
+        if prefer_portrait and not portrait:
+            target_penalty += 1500
+        elif not prefer_portrait and portrait:
+            target_penalty += 900
         if min_dim < 540:
             target_penalty += 2500
         # Avoid downloading unnecessarily huge 4K assets on a tiny Render instance.
@@ -391,9 +394,12 @@ def _choose_pixabay_variant(hit: dict[str, Any], prefer_portrait: bool = True) -
         if not url or width <= 0 or height <= 0:
             continue
         portrait = height >= width
-        penalty = abs(width - 720) + abs(height - 1280)
+        target_width, target_height = ((720, 1280) if prefer_portrait else (1280, 720))
+        penalty = abs(width - target_width) + abs(height - target_height)
         if prefer_portrait and not portrait:
             penalty += 1500
+        elif not prefer_portrait and portrait:
+            penalty += 900
         if min(width, height) < 540:
             penalty += 1800
         if size > MAX_DOWNLOAD_BYTES:
@@ -493,6 +499,8 @@ def _score_candidate(
         score -= 100.0
 
     if prefer_portrait and height >= width:
+        score += 16
+    elif not prefer_portrait and width >= height:
         score += 16
     if min(width, height) >= 720:
         score += 12
