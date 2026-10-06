@@ -4,7 +4,7 @@ import subprocess
 import pytest
 
 from backend.app.models import WordTiming
-from backend.app.services.alignment import AlignmentError, align_narration, match_script, validate_words
+from backend.app.services.alignment import AlignmentError, _transcribe_chunks, align_narration, match_script, validate_words
 from backend.app.services.captions import _caption_events_for_scene, ass_time, build_ass
 from backend.app.services.planner import plan_aligned_scenes
 from backend.app.services.stock import build_review_queries
@@ -177,3 +177,52 @@ def test_absolute_frame_boundaries_do_not_accumulate_rounding(monkeypatch, tmp_p
 
 def test_ass_time_carries_rounding_into_next_minute():
     assert ass_time(59.999) == "0:01:00.00"
+
+
+
+def test_chunk_overlap_keeps_boundary_word_with_context(tmp_path):
+    import wave
+    from types import SimpleNamespace
+
+    path = tmp_path / "long.wav"
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * (55 * 16000))
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def transcribe(self, samples, **kwargs):
+            call = self.calls
+            self.calls += 1
+            if call == 0:
+                # The first 0-30s window intentionally misses the word near 25s.
+                words = [
+                    SimpleNamespace(word="before", start=24.0, end=24.3),
+                    SimpleNamespace(word="duplicate", start=26.0, end=26.3),
+                ]
+            elif call == 1:
+                # The 20-50s window sees the missing word around global 25s
+                # with five seconds of left context. Its local midpoint is >5s.
+                words = [
+                    SimpleNamespace(word="ignored-left-overlap", start=4.0, end=4.3),
+                    SimpleNamespace(word="not", start=5.7, end=6.05),
+                    SimpleNamespace(word="after", start=7.0, end=7.3),
+                    SimpleNamespace(word="ignored-right-overlap", start=26.0, end=26.3),
+                ]
+            else:
+                # Final 40-55s window only owns midpoint >=45s globally.
+                words = [
+                    SimpleNamespace(word="ignored-left-overlap", start=4.2, end=4.4),
+                    SimpleNamespace(word="final", start=6.0, end=6.3),
+                ]
+            return [SimpleNamespace(words=words)], None
+
+    result = _transcribe_chunks(FakeModel(), path)
+    assert [item["text"] for item in result] == ["before", "not", "after", "final"]
+    not_word = next(item for item in result if item["text"] == "not")
+    assert not_word["start"] == pytest.approx(25.7)
+    assert not_word["end"] == pytest.approx(26.05)
