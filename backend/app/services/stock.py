@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 PEXELS_API = "https://api.pexels.com/v1/videos"
 PIXABAY_API = "https://pixabay.com/api/videos/"
-USER_AGENT = "NovumTraceVideoAgent/1.5.0"
+USER_AGENT = "NovumTraceVideoAgent/1.5.2"
 MAX_DOWNLOAD_BYTES = 60 * 1024 * 1024
 DEFAULT_RESULTS_PER_PROVIDER = 6
 
@@ -49,7 +49,7 @@ CYBER_TERMS = (
     "cyber", "cybersecurity", "hacker", "malware", "ransomware", "server",
     "dns", "network attack", "zero-day", "security warning",
 )
-AI_TERMS = ("ai agent", "artificial intelligence", "openai", "chatbot", "language model")
+AI_TERMS = ("ai", "ai agent", "artificial intelligence", "openai", "chatbot", "language model", "model")
 MEDICAL_TERMS = ("medical", "hospital", "health", "doctor", "patient", "medicare")
 ROBOT_TERMS = ("robot", "robotics", "humanoid")
 
@@ -193,6 +193,25 @@ def _contains_any(source: str, terms: Iterable[str]) -> bool:
     return any(_contains_term(source, term) for term in terms)
 
 
+def _positive_context(text: str) -> str:
+    """Keep positive visual instructions and drop explicit avoid/do-not clauses.
+
+    Editing prompts often say things like "avoid robots, space footage". Those
+    words must never become the stock-search theme.
+    """
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text or "")
+    kept: list[str] = []
+    for part in parts:
+        clean = part.strip()
+        if not clean:
+            continue
+        lowered = clean.casefold()
+        if re.match(r"^(avoid|do not|don't|dont|no\s+|without\s+)", lowered):
+            continue
+        kept.append(clean)
+    return " ".join(kept)
+
+
 def _visual_theme(text: str, fallback: str = "") -> str:
     combined = re.sub(r"\s+", " ", f"{text} {fallback}".strip()).lower()
     if _contains_any(combined, SPACE_TERMS):
@@ -218,7 +237,7 @@ def build_search_query(text: str, fallback: str = "") -> str:
     overpowering the actual subject of the Short.
     """
     scene = re.sub(r"\s+", " ", text.strip()).lower()
-    context = re.sub(r"\s+", " ", fallback.strip()).lower()
+    context = re.sub(r"\s+", " ", _positive_context(fallback).strip()).lower()
     source = scene or context
     if not source:
         return "technology data center"
@@ -252,6 +271,10 @@ def build_search_query(text: str, fallback: str = "") -> str:
         return "cybersecurity computer security"
 
     if theme == "ai":
+        if _contains_any(scene, ("laptop", "notebook", "pc", "computer", "surface", "mac")):
+            return "laptop artificial intelligence technology"
+        if _contains_any(scene, ("chip", "chips", "gpu", "processor", "nvidia", "tpu", "memory")):
+            return "computer chip gpu technology"
         if _contains_any(scene, ("internet", "dns", "network", "online")):
             return "artificial intelligence computer network"
         if _contains_any(scene, ("chatbot", "assistant")):
@@ -290,7 +313,7 @@ def build_review_queries(
     from backend.app.services.planner import visual_groups
 
     groups = visual_groups(script or title or "technology news", max_clips)
-    search_context = f"{title} {prompt}".strip()
+    search_context = f"{title} {_positive_context(prompt)}".strip()
     return [
         {
             "scene_index": index,
