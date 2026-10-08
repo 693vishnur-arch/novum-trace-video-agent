@@ -76,3 +76,49 @@ def test_review_duplicates_are_replaced_and_stock_is_not_recycled(monkeypatch, t
     assert "pexels_100" in scenes[0].clip_name
     assert "pexels_101" in scenes[1].clip_name
     assert scenes[2].clip_name is None
+
+
+
+def test_previous_project_stock_id_is_not_reused(monkeypatch, tmp_path):
+    scenes = [
+        Scene(index=0, start=0, end=3, duration=3, text="AI security."),
+    ]
+    monkeypatch.setattr(
+        app_main,
+        "stock_api_status",
+        lambda: {"pexels": True, "pixabay": False},
+    )
+    monkeypatch.setattr(
+        app_main,
+        "_historical_stock_ids",
+        lambda: {("pexels", "100")},
+    )
+    monkeypatch.setattr(
+        app_main,
+        "search_stock",
+        lambda *args, **kwargs: [_candidate("100"), _candidate("101")],
+    )
+
+    def fake_download(candidate, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"video")
+        return destination
+
+    monkeypatch.setattr(app_main, "download_candidate", fake_download)
+
+    paths, credits = app_main._download_stock_for_scenes(
+        project_dir=tmp_path,
+        scenes=scenes,
+        visual_paths=[],
+        title="AI security",
+        prompt="",
+        visual_source="stock_auto",
+        providers="pexels",
+        max_clips=1,
+        selections_raw="",
+        prefer_portrait=True,
+    )
+
+    assert len(paths) == 1
+    assert credits[0]["video_id"] == "101"
+    assert "pexels_101" in scenes[0].clip_name
