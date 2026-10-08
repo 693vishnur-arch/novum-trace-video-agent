@@ -35,7 +35,7 @@ from backend.app.services.stock import (
 )
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
-app = FastAPI(title="Novum Trace Video Agent", version="1.5.0")
+app = FastAPI(title="Novum Trace Video Agent", version="1.5.2")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _project_lock = threading.Lock()
 
