@@ -215,3 +215,12 @@ def test_nvidia_chip_scene_maps_to_computer_chip_visuals():
         fallback="Microsoft Surface Laptop Ultra AI",
     )
     assert query == "computer chip gpu technology"
+
+
+
+def test_ai_cybersecurity_scene_prefers_cyber_visuals():
+    query = build_search_query(
+        "OpenAI just classified GPT-6 as having high cybersecurity capability.",
+        fallback="GPT-6 AI cybersecurity",
+    )
+    assert query == "cybersecurity computer security"
