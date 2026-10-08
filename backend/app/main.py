@@ -35,7 +35,7 @@ from backend.app.services.stock import (
 )
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
-app = FastAPI(title="Novum Trace Video Agent", version="1.5.2")
+app = FastAPI(title="Novum Trace Video Agent", version="1.5.3")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _project_lock = threading.Lock()
 
@@ -53,6 +53,20 @@ def save_upload(upload: UploadFile, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("wb") as handle:
         shutil.copyfileobj(upload.file, handle)
+
+
+def _historical_stock_ids() -> set[tuple[str, str]]:
+    """Return stock provider/video IDs already used in saved project history."""
+    used: set[tuple[str, str]] = set()
+    for project in list_projects():
+        for credit in project.get("stock_credits") or []:
+            key = (
+                str(credit.get("provider") or "").strip().lower(),
+                str(credit.get("video_id") or "").strip(),
+            )
+            if key[0] and key[1]:
+                used.add(key)
+    return used
 
 
 def _parse_stock_selections(raw: str) -> dict[int, dict[str, str]]:
@@ -115,7 +129,7 @@ def _download_stock_for_scenes(
     selections = _parse_stock_selections(selections_raw)
     upload_dir = project_dir / "uploads"
     credits: list[dict[str, Any]] = []
-    used_ids: set[tuple[str, str]] = set()
+    used_ids: set[tuple[str, str]] = _historical_stock_ids()
     stock_paths: list[Path] = []
 
     # In mixed mode, use each uploaded clip once first, then let stock fill the
@@ -380,23 +394,25 @@ def stock_search_preview(
             detail="No stock API key is configured. Add PEXELS_API_KEY and/or PIXABAY_API_KEY in Render.",
         )
 
-    preview_used_ids: set[tuple[str, str]] = set()
+    # Never show a clip that has already been used in saved project history,
+    # and never repeat the same candidate in another scene of this preview.
+    preview_used_ids: set[tuple[str, str]] = _historical_stock_ids()
 
     for item in queries:
         try:
             candidates = search_stock(
                 item["query"],
                 providers=stock_providers,
-                limit=8,
+                limit=16,
                 prefer_portrait=prefer_portrait,
             )
-            # The first candidate is auto-selected in the browser. Promote a
-            # globally unused clip to the first position so eight reviewed
-            # scenes default to eight different source IDs whenever possible.
-            candidates = promote_unused_candidate(candidates, preview_used_ids)
-            if candidates:
-                preview_used_ids.add(candidate_key(candidates[0]))
-            results.append({**item, "candidates": candidates[:3], "error": None})
+            fresh = [
+                candidate for candidate in candidates
+                if candidate_key(candidate) not in preview_used_ids
+            ][:3]
+            for candidate in fresh:
+                preview_used_ids.add(candidate_key(candidate))
+            results.append({**item, "candidates": fresh, "error": None})
         except StockProviderError as exc:
             results.append({**item, "candidates": [], "error": str(exc)})
 
