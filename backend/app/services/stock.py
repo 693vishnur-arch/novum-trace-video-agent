@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 PEXELS_API = "https://api.pexels.com/v1/videos"
 PIXABAY_API = "https://pixabay.com/api/videos/"
-USER_AGENT = "NovumTraceVideoAgent/1.5.2"
+USER_AGENT = "NovumTraceVideoAgent/1.5.3"
 MAX_DOWNLOAD_BYTES = 60 * 1024 * 1024
 DEFAULT_RESULTS_PER_PROVIDER = 6
 
@@ -216,7 +216,18 @@ def _visual_theme(text: str, fallback: str = "") -> str:
     combined = re.sub(r"\s+", " ", f"{text} {fallback}".strip()).lower()
     if _contains_any(combined, SPACE_TERMS):
         return "space"
-    # Explicit AI-agent language wins over generic network/DNS words.
+
+    # Strong security language should beat generic AI branding. This keeps a
+    # GPT/OpenAI cybersecurity story on cyber visuals instead of generic AI B-roll.
+    strong_cyber = (
+        "cyber", "cybersecurity", "hacker", "attack", "attacks", "malware",
+        "ransomware", "threat", "vulnerability", "security", "safeguard",
+        "safeguards", "defense", "defending",
+    )
+    if _contains_any(text, strong_cyber):
+        return "cyber"
+
+    # Explicit AI-agent language still wins over generic network/DNS words.
     if _contains_any(combined, AI_TERMS):
         return "ai"
     if _contains_any(combined, CYBER_TERMS):
