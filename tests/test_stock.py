@@ -194,3 +194,24 @@ def test_review_and_render_use_same_search_context():
         fallback=f"{title} {prompt}",
     )
     assert preview == render
+
+
+
+def test_negative_space_instruction_does_not_hijack_laptop_story():
+    query = build_search_query(
+        "Microsoft just unveiled a laptop designed to run massive AI models locally.",
+        fallback=(
+            "Microsoft Surface Laptop Ultra AI "
+            "Use premium laptop and AI chip visuals. "
+            "Avoid unrelated robots, space footage, sports and generic landscapes."
+        ),
+    )
+    assert query == "laptop artificial intelligence technology"
+
+
+def test_nvidia_chip_scene_maps_to_computer_chip_visuals():
+    query = build_search_query(
+        "It uses NVIDIA's new RTX Spark platform with powerful AI processors.",
+        fallback="Microsoft Surface Laptop Ultra AI",
+    )
+    assert query == "computer chip gpu technology"
