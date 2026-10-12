@@ -4,12 +4,12 @@ from backend.app import main as app_main
 from backend.app.models import Scene
 
 
-def _candidate(video_id: str) -> dict:
+def _candidate(video_id: str, provider: str = "pexels") -> dict:
     return {
-        "provider": "pexels",
+        "provider": provider,
         "id": video_id,
         "query": "artificial intelligence computer",
-        "page_url": f"https://www.pexels.com/video/{video_id}/",
+        "page_url": f"https://example.test/{provider}/{video_id}/",
         "preview_url": "",
         "download_url": f"https://example.test/{video_id}.mp4",
         "width": 720,
@@ -122,3 +122,42 @@ def test_previous_project_stock_id_is_not_reused(monkeypatch, tmp_path):
     assert len(paths) == 1
     assert credits[0]["video_id"] == "101"
     assert "pexels_101" in scenes[0].clip_name
+
+
+
+def test_balanced_candidates_include_both_providers_and_skip_used():
+    candidates = [
+        _candidate("p1", "pixabay"),
+        _candidate("p2", "pixabay"),
+        _candidate("x1", "pexels"),
+        _candidate("x2", "pexels"),
+    ]
+    used = {("pixabay", "p1")}
+    selected = app_main._balanced_fresh_candidates(
+        candidates,
+        used,
+        ["pexels", "pixabay"],
+        limit=3,
+        preferred_provider="pexels",
+    )
+    assert selected[0]["provider"] == "pexels"
+    assert {item["provider"] for item in selected[:2]} == {"pexels", "pixabay"}
+    assert all((item["provider"], item["id"]) not in used for item in selected)
+
+
+def test_balanced_candidates_can_prefer_pixabay_for_next_scene():
+    candidates = [
+        _candidate("x1", "pexels"),
+        _candidate("p1", "pixabay"),
+        _candidate("x2", "pexels"),
+        _candidate("p2", "pixabay"),
+    ]
+    selected = app_main._balanced_fresh_candidates(
+        candidates,
+        set(),
+        ["pexels", "pixabay"],
+        limit=2,
+        preferred_provider="pixabay",
+    )
+    assert selected[0]["provider"] == "pixabay"
+    assert selected[1]["provider"] == "pexels"
