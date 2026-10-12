@@ -35,7 +35,7 @@ from backend.app.services.stock import (
 )
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
-app = FastAPI(title="Novum Trace Video Agent", version="1.5.3")
+app = FastAPI(title="Novum Trace Video Agent", version="1.5.4")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _project_lock = threading.Lock()
 
@@ -67,6 +67,64 @@ def _historical_stock_ids() -> set[tuple[str, str]]:
             if key[0] and key[1]:
                 used.add(key)
     return used
+
+
+def _balanced_fresh_candidates(
+    candidates: list[dict[str, Any]],
+    used_ids: set[tuple[str, str]],
+    providers: list[str],
+    *,
+    limit: int = 3,
+    preferred_provider: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return fresh candidates while preserving provider diversity.
+
+    Relevance ordering from search_stock is kept within each provider. When
+    Pexels and Pixabay are both enabled, the preferred provider gets the first
+    slot, the other provider gets the next available slot, then remaining slots
+    are filled by overall score. Already-used provider/video IDs are excluded.
+    """
+    fresh = [
+        candidate for candidate in candidates
+        if candidate_key(candidate) not in used_ids
+    ]
+    if not fresh or limit <= 0:
+        return []
+
+    provider_order = [p for p in providers if p in {"pexels", "pixabay"}]
+    if preferred_provider in provider_order:
+        provider_order = [
+            preferred_provider,
+            *[p for p in provider_order if p != preferred_provider],
+        ]
+
+    selected: list[dict[str, Any]] = []
+    selected_keys: set[tuple[str, str]] = set()
+
+    for provider in provider_order:
+        candidate = next(
+            (
+                item for item in fresh
+                if str(item.get("provider") or "").lower() == provider
+                and candidate_key(item) not in selected_keys
+            ),
+            None,
+        )
+        if candidate is not None:
+            selected.append(candidate)
+            selected_keys.add(candidate_key(candidate))
+            if len(selected) >= limit:
+                return selected
+
+    for candidate in fresh:
+        key = candidate_key(candidate)
+        if key in selected_keys:
+            continue
+        selected.append(candidate)
+        selected_keys.add(key)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def _parse_stock_selections(raw: str) -> dict[int, dict[str, str]]:
@@ -172,10 +230,21 @@ def _download_stock_for_scenes(
             candidates = search_stock(
                 query,
                 providers=available,
-                limit=8,
+                limit=16,
                 prefer_portrait=prefer_portrait,
             )
-            candidate = first_unused_candidate(candidates, used_ids)
+            preferred_provider = (
+                available[int(scene.index) % len(available)]
+                if len(available) > 1 else available[0]
+            )
+            balanced = _balanced_fresh_candidates(
+                candidates,
+                used_ids,
+                available,
+                limit=1,
+                preferred_provider=preferred_provider,
+            )
+            candidate = balanced[0] if balanced else None
 
         if not candidate:
             continue
@@ -396,20 +465,34 @@ def stock_search_preview(
 
     # Never show a clip that has already been used in saved project history,
     # and never repeat the same candidate in another scene of this preview.
+    # When both providers are enabled, alternate which provider gets the first
+    # card so review defaults naturally use both Pexels and Pixabay.
     preview_used_ids: set[tuple[str, str]] = _historical_stock_ids()
+    requested_providers = normalize_providers(stock_providers)
+    available_providers = [
+        provider for provider in requested_providers if configured.get(provider)
+    ]
 
     for item in queries:
         try:
             candidates = search_stock(
                 item["query"],
-                providers=stock_providers,
+                providers=available_providers,
                 limit=16,
                 prefer_portrait=prefer_portrait,
             )
-            fresh = [
-                candidate for candidate in candidates
-                if candidate_key(candidate) not in preview_used_ids
-            ][:3]
+            preferred_provider = (
+                available_providers[int(item["scene_index"]) % len(available_providers)]
+                if len(available_providers) > 1
+                else (available_providers[0] if available_providers else None)
+            )
+            fresh = _balanced_fresh_candidates(
+                candidates,
+                preview_used_ids,
+                available_providers,
+                limit=3,
+                preferred_provider=preferred_provider,
+            )
             for candidate in fresh:
                 preview_used_ids.add(candidate_key(candidate))
             results.append({**item, "candidates": fresh, "error": None})
