@@ -192,14 +192,14 @@ def _has_strong_local_anchors(
     j: int,
     x: int,
     *,
-    anchor_words: int = 4,
+    anchor_words: int = 3,
 ) -> bool:
     """Allow a tiny ASR omission only inside a long, locally exact passage.
 
     Long narrations can contain enough harmless ASR differences elsewhere to
-    lower the global similarity ratio. For a one-word omission, four exact
-    tokens immediately before and after are stronger evidence than the global
-    score and still prevent short/different scripts from being silently fixed.
+    lower the global similarity ratio. For a one-word omission, three exact
+    tokens immediately before and after are strong local evidence and also
+    works for missed words close to the end of a sentence.
     """
     if len(script_tokens) < 30 or j - i > 2:
         return False
@@ -222,12 +222,12 @@ def _redistribute_local_anchor_span(
     j: int,
     x: int,
     *,
-    anchor_words: int = 4,
+    anchor_words: int = 3,
 ) -> tuple[int, list[WordTiming]] | None:
     """Re-time a short locally anchored passage when Whisper drops a word.
 
     If there is no literal timestamp gap for the omitted word, redistribute the
-    measured span covering four exact words before and after the omission. This
+    measured span covering exact words before and after the omission. This
     keeps timing local to the real audio instead of inventing a global estimate.
     """
     if i < anchor_words or x < anchor_words or x + anchor_words > len(spoken):
