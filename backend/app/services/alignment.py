@@ -78,6 +78,37 @@ def _canonical_token(text: str) -> str:
     return normalized(text)
 
 
+def _script_tokens(script: str) -> list[str]:
+    """Split script for alignment without treating standalone punctuation as speech.
+
+    ElevenLabs renders standalone punctuation such as an em dash as a pause, not
+    a spoken word. Attach punctuation-only tokens to the nearest lexical token
+    so captions keep the original punctuation while alignment only compares
+    actual spoken content.
+    """
+    raw = script.split()
+    if not raw:
+        return []
+
+    tokens: list[str] = []
+    pending_prefix: list[str] = []
+    for token in raw:
+        if normalized(token):
+            if pending_prefix:
+                token = " ".join([*pending_prefix, token])
+                pending_prefix = []
+            tokens.append(token)
+            continue
+        if tokens:
+            tokens[-1] = f"{tokens[-1]} {token}"
+        else:
+            pending_prefix.append(token)
+
+    if pending_prefix and tokens:
+        tokens[-1] = f"{tokens[-1]} {' '.join(pending_prefix)}"
+    return tokens
+
+
 def _retokenize_exact(tokens: list[str], spoken: list[WordTiming]) -> list[WordTiming] | None:
     """Reconcile identical text with different word boundaries before diffing.
 
@@ -278,7 +309,7 @@ Only small substitutions (e.g. OpenAI/Open AI or 24/twenty-four) may share
 an observed speech span. Missing/extra speech or large mismatches fail explicitly.
 """
     validate_words(spoken, duration)
-    tokens = script.split()
+    tokens = _script_tokens(script)
     if not tokens:
         return spoken
     retokenized = _retokenize_exact(tokens, spoken)
