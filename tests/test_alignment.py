@@ -284,3 +284,24 @@ def test_standalone_ellipsis_is_not_treated_as_spoken_word():
     words = measured("AI found the flaw and humans had to patch it.")
     aligned = match_script(script, words, 8)
     assert "..." in aligned[3].text
+
+
+
+def test_missed_word_near_sentence_end_uses_three_word_anchors():
+    script = (
+        "This report explains how modern security teams use artificial intelligence to scan software, "
+        "identify vulnerabilities, prioritize fixes, review alerts, test patches, coordinate responses, "
+        "and protect critical systems. The final question is what happens when AI can find security flaws "
+        "faster than humans can patch them?"
+    )
+    spoken_text = (
+        "This report explains how advanced cyber teams use artificial intelligence to scan software, "
+        "identify vulnerabilities, rank fixes, review alerts, test patches, manage responses, "
+        "and protect critical systems. The final question is what happens when AI can find security flaws "
+        "faster than can patch them?"
+    )
+    words = measured(spoken_text, start=0.4, step=0.24)
+    aligned = match_script(script, words, 20)
+    assert [word.text for word in aligned] == script.split()
+    human_index = script.split().index("humans")
+    assert aligned[human_index].start < aligned[human_index].end
