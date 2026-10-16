@@ -253,3 +253,34 @@ def test_short_script_extra_word_still_fails_even_with_nearby_matches():
             words,
             8,
         )
+
+
+
+def test_standalone_em_dash_is_not_treated_as_spoken_word():
+    script = "One of the AI systems involved was Anthropic's Mythos — a model designed for security."
+    words = measured("One of the AI systems involved was Anthropic's Mythos a model designed for security.")
+    aligned = match_script(script, words, 8)
+    assert [normalized(word.text) for word in aligned] == [
+        normalized("One"),
+        normalized("of"),
+        normalized("the"),
+        normalized("AI"),
+        normalized("systems"),
+        normalized("involved"),
+        normalized("was"),
+        normalized("Anthropic's"),
+        normalized("Mythos —"),
+        normalized("a"),
+        normalized("model"),
+        normalized("designed"),
+        normalized("for"),
+        normalized("security."),
+    ]
+    assert aligned[8].text == "Mythos —"
+
+
+def test_standalone_ellipsis_is_not_treated_as_spoken_word():
+    script = "AI found the flaw ... and humans had to patch it."
+    words = measured("AI found the flaw and humans had to patch it.")
+    aligned = match_script(script, words, 8)
+    assert "..." in aligned[3].text
