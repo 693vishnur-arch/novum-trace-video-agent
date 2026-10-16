@@ -4,7 +4,7 @@ import subprocess
 import pytest
 
 from backend.app.models import WordTiming
-from backend.app.services.alignment import AlignmentError, _transcribe_chunks, align_narration, match_script, validate_words
+from backend.app.services.alignment import AlignmentError, _transcribe_chunks, align_narration, match_script, normalized, validate_words
 from backend.app.services.captions import _caption_events_for_scene, ass_time, build_ass
 from backend.app.services.planner import plan_aligned_scenes
 from backend.app.services.stock import build_review_queries
