@@ -75,6 +75,10 @@ def _canonical_token(text: str) -> str:
     surface = re.sub(r"^[^a-z0-9']+|[^a-z0-9']+$", "", surface)
     if surface in _CONTRACTION_CANONICAL:
         return _CONTRACTION_CANONICAL[surface]
+    # A recognizer may hear the model name "Sol" as the homophone "sole".
+    # Normalize only for matching; retain the original spelling in captions.
+    if surface == "sol":
+        return "sole"
     return normalized(text)
 
 
@@ -315,8 +319,8 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
     retokenized = _retokenize_exact(tokens, spoken)
     if retokenized is not None:
         return validate_words(retokenized, duration)
-    a = [normalized(w) for w in tokens]
-    b = [normalized(w.text) for w in spoken]
+    a = [_canonical_token(w) for w in tokens]
+    b = [_canonical_token(w.text) for w in spoken]
     matcher = SequenceMatcher(None, a, b, autojunk=False)
     matched = sum(block.size for block in matcher.get_matching_blocks())
     token_ratio = matched / max(len(a), len(b))
