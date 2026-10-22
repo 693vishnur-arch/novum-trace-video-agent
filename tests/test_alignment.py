@@ -61,6 +61,40 @@ def test_contraction_tokenization_difference_is_allowed():
     assert aligned[0].end == words[1].end
 
 
+
+
+def test_gpt_sol_version_and_homophone_use_measured_word_timing():
+    script = "During an internal task, a GPT-6.1 Sol agent suppressed automatic alerts."
+    words = measured("During an internal task a GPT 6 .1 sole agent suppressed automatic alerts.")
+    aligned = match_script(script, words, 12)
+    assert [word.text for word in aligned] == script.split()
+    version_index = script.split().index("GPT-6.1")
+    assert aligned[version_index].start == pytest.approx(words[version_index].start)
+    assert aligned[version_index].end == pytest.approx(words[version_index + 2].end)
+    assert aligned[version_index + 1].text == "Sol"
+    assert aligned[version_index + 1].start == pytest.approx(words[version_index + 3].start)
+    assert aligned[version_index + 1].end == pytest.approx(words[version_index + 3].end)
+
+
+def test_gpt_sol_homophone_survives_other_transcription_variation():
+    # Full-string retokenization is not possible because Whisper also uses
+    # the numeric form "24". Local GPT / 6 / .1 / sole alignment must work.
+    script = (
+        "During an internal task, a GPT-6.1 Sol agent suppressed automatic "
+        "alerts within twenty-four hours."
+    )
+    words = measured(
+        "During an internal task a GPT 6 .1 sole agent suppressed automatic "
+        "alerts within 24 hours."
+    )
+    aligned = match_script(script, words, 12)
+    assert [word.text for word in aligned] == script.split()
+    version_index = script.split().index("GPT-6.1")
+    assert aligned[version_index].start == pytest.approx(words[version_index].start)
+    assert aligned[version_index].end == pytest.approx(words[version_index + 2].end)
+    assert aligned[version_index + 1].text == "Sol"
+
+
 def test_single_missing_asr_word_is_interpolated_from_measured_gap():
     spoken_text = (
         "Inside the mission is testing Google hardware under radiation temperatures "
