@@ -75,10 +75,16 @@ def _canonical_token(text: str) -> str:
     surface = re.sub(r"^[^a-z0-9']+|[^a-z0-9']+$", "", surface)
     if surface in _CONTRACTION_CANONICAL:
         return _CONTRACTION_CANONICAL[surface]
-    # A recognizer may hear the model name "Sol" as the homophone "sole".
-    # Normalize only for matching; retain the original spelling in captions.
-    if surface == "sol":
+    # Speech recognizers can spell the model name "Sol" as "sole" or
+    # "soul". These homophones are equivalent for alignment only; captions
+    # retain the exact spelling in the script.
+    if surface in {"sol", "soul"}:
         return "sole"
+    # Whisper sometimes adds a possessive to a numeric model-version fragment:
+    # "GPT-6.1 Sol" is transcribed as "GPT 6 .1's soul". The leading dot on
+    # ".1's" was stripped above, so normalize a number followed by "'s".
+    if re.fullmatch(r"\d+(?:\.\d+)?'s", surface):
+        return normalized(surface[:-2])
     return normalized(text)
 
 
