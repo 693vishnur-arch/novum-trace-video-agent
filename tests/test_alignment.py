@@ -76,6 +76,21 @@ def test_gpt_sol_version_and_homophone_use_measured_word_timing():
     assert aligned[version_index + 1].end == pytest.approx(words[version_index + 3].end)
 
 
+def test_gpt_sol_soul_and_spurious_possessive_keep_original_captions():
+    script = "That was much higher than GPT-6.1 Sol. But there’s an important detail."
+    words = measured("That was much higher than GPT 6 .1's soul, But there's an important detail.")
+    aligned = match_script(script, words, 12)
+
+    assert [word.text for word in aligned] == script.split()
+    script_index = script.split().index("GPT-6.1")
+    spoken_index = next(i for i, word in enumerate(words) if word.text == "GPT")
+    assert aligned[script_index].start == pytest.approx(words[spoken_index].start)
+    assert aligned[script_index].end == pytest.approx(words[spoken_index + 2].end)
+    assert aligned[script_index + 1].text == "Sol."
+    assert aligned[script_index + 1].start == pytest.approx(words[spoken_index + 3].start)
+    assert aligned[script_index + 1].end == pytest.approx(words[spoken_index + 3].end)
+
+
 def test_gpt_sol_homophone_survives_other_transcription_variation():
     # Full-string retokenization is not possible because Whisper also uses
     # the numeric form "24". Local GPT / 6 / .1 / sole alignment must work.
