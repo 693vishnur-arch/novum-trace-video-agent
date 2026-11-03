@@ -195,34 +195,28 @@ def _interpolate_missing_script_words(
     return result
 
 
-def _has_strong_local_anchors(
+def _local_anchor_count(
     script_tokens: list[str],
     spoken_tokens: list[str],
     i: int,
     j: int,
     x: int,
-    *,
-    anchor_words: int = 3,
-) -> bool:
-    """Allow a tiny ASR omission only inside a long, locally exact passage.
+) -> int:
+    """Find a short exact context on both sides of a one/two-word omission.
 
-    Long narrations can contain enough harmless ASR differences elsewhere to
-    lower the global similarity ratio. For a one-word omission, three exact
-    tokens immediately before and after are strong local evidence and also
-    works for missed words close to the end of a sentence.
+    Prefer three exact neighbors; accept two on both sides when tiny.en also
+    garbles another nearby token. Never apply this to short narrations.
     """
-    if len(script_tokens) < 30 or j - i > 2:
-        return False
-    if i < anchor_words or x < anchor_words:
-        return False
-    if i + (j - i) + anchor_words > len(script_tokens):
-        return False
-    if x + anchor_words > len(spoken_tokens):
-        return False
-    return (
-        script_tokens[i - anchor_words:i] == spoken_tokens[x - anchor_words:x]
-        and script_tokens[j:j + anchor_words] == spoken_tokens[x:x + anchor_words]
-    )
+    if len(script_tokens) < 30 or not 1 <= j - i <= 2:
+        return 0
+    for count in (3, 2):
+        if (i >= count and x >= count
+                and j + count <= len(script_tokens)
+                and x + count <= len(spoken_tokens)
+                and script_tokens[i - count:i] == spoken_tokens[x - count:x]
+                and script_tokens[j:j + count] == spoken_tokens[x:x + count]):
+            return count
+    return 0
 
 
 def _redistribute_local_anchor_span(
@@ -246,9 +240,14 @@ def _redistribute_local_anchor_span(
     end_script = j + anchor_words
     start_spoken = x - anchor_words
     end_spoken = x + anchor_words
+    # A long silence between anchors is not evidence of a missed word.
+    if any(spoken[k].start - spoken[k - 1].end > 0.6
+           for k in range(start_spoken + 1, end_spoken)):
+        return None
     start = float(spoken[start_spoken].start)
     end = float(spoken[end_spoken - 1].end)
-    if not (math.isfinite(start) and math.isfinite(end) and end - start > 0.2):
+    if not (math.isfinite(start) and math.isfinite(end)
+            and 0.2 < end - start <= 8.0):
         return None
 
     local_tokens = tokens[start_script:end_script]
@@ -350,8 +349,9 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
             result.extend(WordTiming(tokens[k], spoken[x + k - i].start,
                                      spoken[x + k - i].end) for k in range(i, j))
             continue
+        anchor_count = _local_anchor_count(a, b, i, j, x)
         if tag == "delete" and x == y and (
-            char_ratio >= 0.97 or _has_strong_local_anchors(a, b, i, j, x)
+            char_ratio >= 0.97 or anchor_count
         ):
             # Recover a tiny ASR omission when either the whole narration is an
             # almost-exact match or this specific passage has strong exact
@@ -363,10 +363,12 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
 
             # Tiny Whisper sometimes gives the neighboring words touching
             # timestamps, leaving no literal gap for a word that is clearly
-            # present in the audio. When four exact anchors exist on both sides,
+            # present in the audio. When local exact anchors exist on both sides,
             # rebuild only that local passage from its measured outer span.
-            if _has_strong_local_anchors(a, b, i, j, x):
-                local = _redistribute_local_anchor_span(tokens, spoken, i, j, x)
+            if anchor_count:
+                local = _redistribute_local_anchor_span(
+                    tokens, spoken, i, j, x, anchor_words=anchor_count
+                )
                 if local is not None:
                     replace_count, rebuilt = local
                     if len(result) >= replace_count:
