@@ -601,6 +601,102 @@ def _transcribe_chunks(model, audio: Path) -> list[dict]:
     return cleaned
 
 
+def _recheck_asr_insertions(model, audio: Path, words: list[dict], script: str) -> list[dict]:
+    """Re-decode one-word insertions with local audio and unprompted context.
+
+    A word can straddle the final phoneme rather than silence, so signal level
+    alone cannot verify it. Remove it only when a fresh decode independently
+    recognizes the surrounding script anchors without the inserted token.
+    Original timestamps for all retained words are preserved.
+    """
+    import numpy as np
+
+    tokens = _script_tokens(script)
+    if len(tokens) < 6 or len(words) < 6:
+        return words
+    expected = [_canonical_token(t) for t in tokens]
+    actual = [_canonical_token(str(w["text"])) for w in words]
+    matcher = SequenceMatcher(None, expected, actual, autojunk=False)
+    removals: set[int] = set()
+    attempts = 0
+    with wave.open(str(audio), "rb") as source:
+        rate = source.getframerate()
+        if source.getnchannels() != 1 or source.getsampwidth() != 2 or rate != 16000:
+            return words
+        duration = source.getnframes() / rate
+        for tag, i, j, x, y in matcher.get_opcodes():
+            if tag != "insert" or y - x != 1 or i != j or x < 4:
+                continue
+            tail = i == len(tokens) and y == len(words)
+            left = min(4, i, x)
+            right = 0 if tail else min(4, len(tokens) - i, len(words) - y)
+            if left < 4 or (not tail and right < 4):
+                continue
+            # Both sides must already have exact anchors on the original
+            # timeline. Never re-decode an unanchored or large mismatch.
+            if (expected[i-left:i] != actual[x-left:x]
+                    or expected[j:j+right] != actual[y:y+right]):
+                continue
+            if not 0 < float(words[x]["end"]) - float(words[x]["start"]) <= 2:
+                continue
+            if attempts >= 3:
+                break
+            attempts += 1
+            first = x - left
+            last = y + right - 1 if right else x - 1
+            start = max(0.0, float(words[first]["start"]) - 1.0)
+            if tail:
+                start = max(0.0, duration - 10.0)
+            end = duration if tail else min(duration, float(words[last]["end"]) + 1.0)
+            if end - start > 15:
+                continue
+            source.setpos(int(start * rate))
+            samples = np.frombuffer(source.readframes(int((end-start)*rate)),
+                                    dtype="<i2").astype(np.float32) / 32768.0
+            segments, _ = model.transcribe(
+                samples, word_timestamps=True, beam_size=5,
+                condition_on_previous_text=False, vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 250},
+            )
+            local = [w for segment in segments for w in segment.words or []
+                     if w.word.strip() and math.isfinite(w.start) and math.isfinite(w.end)
+                     and 0 <= w.start < w.end <= end-start+0.05]
+            local_tokens = [_canonical_token(w.word) for w in local]
+            context = expected[i-left:j+right]
+            for offset in range(len(local_tokens)-len(context)+1):
+                stop = offset + len(context)
+                candidate = local_tokens[offset:stop]
+                differences = [(a, b) for a, b in zip(context, candidate) if a != b]
+                # Keep at least seven of eight middle anchors exact. A fresh
+                # decode may spell an unfamiliar name differently (Anthropic /
+                # Entropic), but it must not add or omit a context word.
+                if differences and not (
+                    not tail and len(differences) == 1
+                    and SequenceMatcher(None, *differences[0], autojunk=False).ratio() >= .75
+                ):
+                    continue
+                if tail and stop != len(local):
+                    continue  # Independent decode still heard extra speech.
+                if (abs(start + local[offset].start - float(words[first]["start"])) > .6
+                        or abs(start + local[stop-1].end - float(words[last]["end"])) > (.15 if tail else .6)):
+                    continue
+                if tail:
+                    # A decoder can itself omit a real extra word. Require
+                    # quiet PCM after the independently measured final word,
+                    # allowing only 80 ms for its fricative/release. Unlike the
+                    # old test, this does not demand silence under the final /s/.
+                    after = min(len(samples), int((local[stop-1].end + .08) * rate))
+                    residual = samples[after:]
+                    if len(residual) < int(.08 * rate):
+                        continue
+                    if (float(np.max(np.abs(residual))) > .01
+                            or float(np.sqrt(np.mean(residual ** 2))) > .0032):
+                        continue
+                removals.add(x)
+                break
+    return [w for index, w in enumerate(words) if index not in removals]
+
+
 def _worker(request: Path, response: Path) -> None:
     from faster_whisper import WhisperModel
 
@@ -616,6 +712,7 @@ def _worker(request: Path, response: Path) -> None:
         model = WhisperModel(os.getenv("WHISPER_MODEL", "tiny.en"), device="cpu",
                              compute_type="int8", cpu_threads=1, num_workers=1)
         words = _transcribe_chunks(model, pcm)
+        words = _recheck_asr_insertions(model, pcm, words, payload.get("script", ""))
         response.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
     finally:
         pcm.unlink(missing_ok=True)
