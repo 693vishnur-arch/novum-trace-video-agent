@@ -35,7 +35,7 @@ from backend.app.services.stock import (
 )
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
-app = FastAPI(title="Novum Trace Video Agent", version="1.5.6")
+app = FastAPI(title="Novum Trace Video Agent", version="1.5.7")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 _project_lock = threading.Lock()
 
@@ -422,7 +422,7 @@ def home() -> HTMLResponse:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "version": app.version}
 
 
 @app.get("/api/stock/status")

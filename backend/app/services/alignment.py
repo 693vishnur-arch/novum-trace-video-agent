@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import wave
+from array import array
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -299,22 +300,65 @@ def _is_tiny_trailing_asr_insert(
     y: int,
     script_index: int,
     script_length: int,
-    token_ratio: float,
-    char_ratio: float,
+    silent_tail_verified: bool = False,
 ) -> bool:
     """Ignore only a single tiny recognizer hallucination after the script ends.
 
-    This is deliberately narrow so genuine extra narration still fails:
-    the insertion must be exactly one word, occur only after the final script
-    token, and the rest of the narration must already be an almost-exact match.
+    The caller must verify silence in the candidate's measured audio interval.
+    Text similarity or short duration alone cannot authorize dropping speech.
     """
-    if script_index != script_length or y - x != 1:
-        return False
-    if token_ratio < 0.99 or char_ratio < 0.99:
+    if not silent_tail_verified or script_index != script_length or y - x != 1:
         return False
     word = spoken[x]
     duration = float(word.end) - float(word.start)
-    return math.isfinite(duration) and 0.0 < duration <= 0.8
+    return math.isfinite(duration) and 0.0 < duration <= 2.0
+
+
+def _silent_trailing_word(audio: Path, script: str, spoken: list[WordTiming], duration: float) -> bool:
+    """Confirm one extra trailing ASR token lies entirely in measured PCM silence.
+
+    Text similarity cannot distinguish real extra speech from hallucination.
+    Require an alignable prefix, exact final anchors, and quiet samples across
+    the candidate interval and the preceding 80 ms. Fail closed for other audio
+    formats or unreadable samples. The production caller provides PCM WAV.
+    """
+    tokens = _script_tokens(script)
+    if len(tokens) < 3 or len(spoken) < 4:
+        return False
+    tail = spoken[-1]
+    if not (0.08 <= tail.end - tail.start <= 2.0):
+        return False
+    if not (0 < len(normalized(tail.text)) <= 12):
+        return False
+    if [_canonical_token(w.text) for w in spoken[-4:-1]] != [
+        _canonical_token(w) for w in tokens[-3:]
+    ]:
+        return False
+    try:
+        # Validate every other difference with the usual omission and mismatch
+        # rules. Do not require a global 99% token score: valid split acronyms
+        # and compound words can lower that score on otherwise matching audio.
+        match_script(script, spoken[:-1], duration)
+        with wave.open(str(audio), "rb") as source:
+            if source.getsampwidth() != 2 or source.getcomptype() != "NONE":
+                return False
+            rate = source.getframerate()
+            start = max(0, int((tail.start - 0.08) * rate))
+            end = int(tail.end * rate)
+            if end > source.getnframes() or start >= end:
+                return False
+            source.setpos(start)
+            samples = array("h", source.readframes(end - start))
+            if sys.byteorder != "little":
+                samples.byteswap()
+            if len(samples) != (end - start) * source.getnchannels():
+                return False
+            rms = math.sqrt(sum(int(s) ** 2 for s in samples) / len(samples))
+            # Both peak and RMS must be low, so a short spoken burst cannot be
+            # hidden by averaging it with a longer stretch of silence.
+            return max(abs(int(s)) for s in samples) <= 328 and rms <= 104
+    except (AlignmentError, OSError, EOFError, wave.Error, ValueError):
+        return False
 
 
 def validate_words(words: list[WordTiming], duration: float) -> list[WordTiming]:
@@ -335,7 +379,8 @@ def validate_words(words: list[WordTiming], duration: float) -> list[WordTiming]
     return words
 
 
-def match_script(script: str, spoken: list[WordTiming], duration: float) -> list[WordTiming]:
+def match_script(script: str, spoken: list[WordTiming], duration: float, *,
+                 silent_tail_verified: bool = False) -> list[WordTiming]:
     """Retain script spelling, using recognized word boundaries as anchors.
 
 Only small substitutions (e.g. OpenAI/Open AI or 24/twenty-four) may share
@@ -351,8 +396,6 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
     a = [_canonical_token(w) for w in tokens]
     b = [_canonical_token(w.text) for w in spoken]
     matcher = SequenceMatcher(None, a, b, autojunk=False)
-    matched = sum(block.size for block in matcher.get_matching_blocks())
-    token_ratio = matched / max(len(a), len(b))
     script_chars = "".join(_canonical_token(token) for token in tokens)
     spoken_chars = "".join(_canonical_token(word.text) for word in spoken)
     char_ratio = SequenceMatcher(None, script_chars, spoken_chars, autojunk=False).ratio()
@@ -407,7 +450,7 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
             continue
 
         if tag == "insert" and i == j and _is_tiny_trailing_asr_insert(
-            spoken, x, y, i, len(a), token_ratio, char_ratio
+            spoken, x, y, i, len(a), silent_tail_verified
         ):
             # tiny.en can hallucinate one short word after otherwise exact
             # narration has ended. Do not let that recognizer-only tail block
@@ -447,7 +490,8 @@ def align_narration(audio: Path, script: str, duration: float, work_dir: Path) -
         )
         payload = json.loads(response.read_text(encoding="utf-8"))
         spoken = [WordTiming(**word) for word in payload]
-        return match_script(script, spoken, duration)
+        silent_tail_verified = _silent_trailing_word(audio, script, spoken, duration)
+        return match_script(script, spoken, duration, silent_tail_verified=silent_tail_verified)
     except subprocess.CalledProcessError as exc:
         reason = ("The speech worker was killed, possibly because the server ran out of memory."
                   if exc.returncode in {-9, 137} else
