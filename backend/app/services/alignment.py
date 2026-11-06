@@ -293,6 +293,30 @@ def _is_repeated_asr_insert(
     return False
 
 
+def _is_tiny_trailing_asr_insert(
+    spoken: list[WordTiming],
+    x: int,
+    y: int,
+    script_index: int,
+    script_length: int,
+    token_ratio: float,
+    char_ratio: float,
+) -> bool:
+    """Ignore only a single tiny recognizer hallucination after the script ends.
+
+    This is deliberately narrow so genuine extra narration still fails:
+    the insertion must be exactly one word, occur only after the final script
+    token, and the rest of the narration must already be an almost-exact match.
+    """
+    if script_index != script_length or y - x != 1:
+        return False
+    if token_ratio < 0.99 or char_ratio < 0.99:
+        return False
+    word = spoken[x]
+    duration = float(word.end) - float(word.start)
+    return math.isfinite(duration) and 0.0 < duration <= 0.8
+
+
 def validate_words(words: list[WordTiming], duration: float) -> list[WordTiming]:
     if not words:
         raise AlignmentError("No speech was detected in the narration.")
@@ -380,6 +404,14 @@ an observed speech span. Missing/extra speech or large mismatches fail explicitl
         if tag == "insert" and i == j and _is_repeated_asr_insert(a, b[x:y], i):
             # Ignore a duplicated phrase hallucinated by the recognizer during
             # a pause; later script words keep their measured timestamps.
+            continue
+
+        if tag == "insert" and i == j and _is_tiny_trailing_asr_insert(
+            spoken, x, y, i, len(a), token_ratio, char_ratio
+        ):
+            # tiny.en can hallucinate one short word after otherwise exact
+            # narration has ended. Do not let that recognizer-only tail block
+            # rendering; larger or less-similar extra speech still fails.
             continue
 
         if (tag != "replace" or max(j - i, y - x) > 3
