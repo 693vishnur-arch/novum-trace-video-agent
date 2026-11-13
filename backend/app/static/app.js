@@ -82,12 +82,12 @@ function updateVideoMode() {
 }
 
 function updateStockControls() {
-  const enabled = visualSource.value !== 'upload';
+  const enabled = !['upload', 'ai_auto'].includes(visualSource.value);
   findStockButton.disabled = !enabled;
   selectionMode.disabled = !enabled;
   stockProviders.disabled = !enabled;
   stockMaxClips.disabled = !enabled;
-  preferPortrait.disabled = !enabled;
+  preferPortrait.disabled = false;
   if (!enabled || selectionMode.value === 'auto') {
     stockSelections.value = '';
     stockCandidates.classList.add('hidden');
@@ -233,7 +233,18 @@ function applyState(state) {
   $('statusSubtitle').textContent = state.title || state.project_id;
   $('durationValue').textContent = fmtDuration(state.duration);
   $('scenesValue').textContent = Array.isArray(state.scenes) ? state.scenes.length : '-';
-  $('generationValue').textContent = state.generation_budget && state.generation_budget.used || 0;
+  $('generationValue').textContent = state.ai_clip_count || 0;
+  const plans = Array.isArray(state.visual_plan) ? state.visual_plan : [];
+  const planBox = $('visualPlan');
+  if (plans.length) {
+    planBox.classList.remove('hidden');
+    planBox.innerHTML = '<strong>Documentary scene plan · AI footage is illustrative</strong>' + plans.map(function(p) {
+      const task = (state.ai_tasks || []).find(t => t.scene_index === p.scene_index);
+      return '<div class="credit-row"><strong>Scene ' + (p.scene_index + 1) + '</strong> ' + esc(p.visual_type) +
+        ' · ' + esc(p.camera) + ' · ' + esc(task ? task.status : p.source_requirement) +
+        '<small>' + esc(p.narration) + '</small></div>';
+    }).join('');
+  } else { planBox.classList.add('hidden'); }
   $('stockValue').textContent = state.stock_clip_count || 0;
 
   if (state.status === 'failed') {
@@ -365,7 +376,18 @@ $('copyDescription').addEventListener('click', function () {
   navigator.clipboard.writeText($('metadataDescription').textContent || '');
 });
 
+async function loadAIStatus() {
+  try {
+    const r = await fetch('/api/ai/status');
+    const state = await r.json();
+    $('aiStatus').textContent = state.runway_configured
+      ? 'Runway Dev configured · paid generation enabled when budget is positive'
+      : 'Runway key missing · AI generation requires RUNWAYML_API_SECRET';
+  } catch (_) { $('aiStatus').textContent = 'Runway status unavailable'; }
+}
+
 updateVideoMode();
 updateStockControls();
 loadStockStatus();
+loadAIStatus();
 loadHistory();
