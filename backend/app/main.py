@@ -729,7 +729,11 @@ def create_project(
         if not storyboard_approved:
             raise HTTPException(status_code=400, detail="Review and approve the storyboard first")
         try:
-            _parse_scene_overrides(scene_overrides, min(stock_max_clips, int(video_profile(video_mode)["max_scenes"])))
+            checked_overrides = _parse_scene_overrides(scene_overrides, min(stock_max_clips, int(video_profile(video_mode)["max_scenes"])))
+            if visual_source == "ai_auto" and any(v["visual_type"] != "ai" for v in checked_overrides.values()):
+                raise ValueError("AI-only mode cannot use authentic scenes")
+            if visual_source == "authentic_auto" and any(v["visual_type"] != "authentic" for v in checked_overrides.values()):
+                raise ValueError("Authentic-only mode cannot use AI scenes")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0:
