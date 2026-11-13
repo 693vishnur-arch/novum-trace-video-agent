@@ -60,7 +60,7 @@ def create_task(prompt: str, *, portrait: bool, image_uri: str | None = None,
         "duration": duration,
     }
     if image_uri:
-        payload["promptImage"] = image_uri
+        payload["promptImage"] = {"uri": image_uri, "position": "first"}
     response = _request("/image_to_video" if image_uri else "/text_to_video", payload=payload)
     task_id = str(response.get("id") or "")
     if not task_id:
