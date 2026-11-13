@@ -12,9 +12,9 @@
       <div>
         <div class="eyebrow">NOVUM TRACE</div>
         <h1>Video Agent</h1>
-        <p>Narration + script -> matched stock clips -> finished YouTube Short or long-form video.</p>
+        <p>Narration + script → documentary footage or optional AI scenes → finished YouTube video.</p>
       </div>
-      <div class="pill"><span class="dot"></span> V1.5.8 local audio recheck</div>
+      <div class="pill"><span class="dot"></span> Documentary Pipeline · Preview</div>
     </header>
 
     <main class="grid">
@@ -22,7 +22,7 @@
         <div class="panel-heading">
           <div>
             <h2 id="creatorHeading">Create Short</h2>
-            <p>FFmpeg editing stays local. AI video generation stays off.</p>
+            <p>FFmpeg editing stays on this server. Optional AI scenes use Runway Dev API and credits.</p>
           </div>
           <div class="budget-card">
             <span>AI generation budget</span>
@@ -43,7 +43,7 @@
             <label>
               <span>Max AI generations</span>
               <input id="max_generations" name="max_generations" type="number" min="0" max="20" value="0" />
-              <small>Stock search does not count as AI generation.</small>
+              <small>Maximum paid Runway jobs; 0 prevents all AI generation. Each job uses API credits.</small>
             </label>
           </div>
 
@@ -74,6 +74,8 @@
           </label>
 
           <section class="stock-box">
+            <p><strong>Documentary safety:</strong> AI recreations are illustrations, not evidence of actual news events. Authentic mode currently searches licensed Pexels/Pixabay assets; additional archival sources require a separate integration.</p>
+            <div id="aiStatus" class="provider-status">Checking Runway configuration...</div>
             <div class="stock-heading">
               <div>
                 <span class="section-kicker">VISUAL SOURCE</span>
@@ -89,6 +91,9 @@
                   <option value="stock_auto" selected>Find free stock automatically</option>
                   <option value="stock_mix">Stock + my uploaded clips</option>
                   <option value="upload">Upload my own clips only</option>
+                  <option value="hybrid_auto">Hybrid documentary · AI + licensed stock</option>
+                  <option value="authentic_auto">Authentic / licensed footage only</option>
+                  <option value="ai_auto">AI-generated illustrated footage only</option>
                 </select>
               </label>
               <label>
@@ -223,6 +228,7 @@
             <p id="metadataDescription"></p>
           </div>
 
+          <div id="visualPlan" class="metadata hidden"></div>
           <div id="renderError" class="error hidden"></div>
         </div>
       </aside>
