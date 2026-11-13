@@ -179,6 +179,7 @@ Style: Caption,DejaVu Sans,{caption_size},&H00FFFFFF,&H000000FF,&H00101010,&H780
 Style: Hook,DejaVu Sans,{hook_size},&H00FFFFFF,&H000000FF,&H00101010,&H78000000,-1,0,0,0,100,100,1,0,1,5,2,5,90,90,0,1
 Style: Ending,DejaVu Sans,{ending_size},&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,1,0,1,5,2,5,90,90,0,1
 Style: Brand,DejaVu Sans,{brand_size},&H00FFFFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,2,0,1,3,1,2,90,90,{brand_margin_v},1
+Style: Synthetic,DejaVu Sans,21,&H0000FFFF,&H000000FF,&H00101010,&H96000000,-1,0,0,0,100,100,1,0,1,2,1,9,30,30,40,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -221,6 +222,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             text = ass_escape(wrap_caption(chunk, width=wrap_width, max_lines=2))
             events.append(
                 f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{text}"
+            )
+
+    # Never present AI-generated B-roll as actual recorded news footage.
+    for scene in scenes:
+        if (scene.clip_name or "").startswith("ai_"):
+            events.append(
+                f"Dialogue: 6,{ass_time(scene.start)},{ass_time(scene.end)},Synthetic,,0,0,0,,"
+                "AI-GENERATED ILLUSTRATION"
             )
 
     if hook.strip():
