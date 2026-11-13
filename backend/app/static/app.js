@@ -332,6 +332,9 @@ async function renderMediaReview(state) {
       '<div class="review-media"><small>Loading preview...</small></div>' +
       '<label>Replace clip or still image<input type="file" accept="video/*,image/*" class="review-file"></label>' +
       '<button type="button" class="secondary review-replace">Replace this scene</button>' +
+      (state.visual_source !== 'authentic_auto' &&
+        Number(state.generation_budget?.remaining || 0) > 0
+        ? '<button type="button" class="secondary review-regenerate">Regenerate AI clip (paid)</button>' : '') +
       '</div>';
   }).join('');
   const token = $('aiAdminToken').value.trim();
@@ -354,6 +357,24 @@ async function renderMediaReview(state) {
           : '<img alt="Scene preview" style="max-height:260px;max-width:100%" src="' + url + '">';
       } catch (e) { mediaArea.textContent = e.message; }
     }
+    const regenButton = card.querySelector('.review-regenerate');
+    if (regenButton) regenButton.addEventListener('click', async () => {
+      regenButton.disabled = true;
+      try {
+        const r = await fetch('/api/projects/' + state.project_id +
+          '/scenes/' + index + '/regenerate', {method:'POST',
+          headers:{'X-Novum-Admin-Token':$('aiAdminToken').value.trim()}});
+        const p = await r.json();
+        if (!r.ok) throw new Error(p.detail || 'Regeneration failed');
+        $('mediaReview').classList.add('hidden');
+        startPolling(state.project_id);
+      } catch (e) {
+        $('reviewError').textContent = e.message;
+        $('reviewError').classList.remove('hidden');
+      } finally {
+        regenButton.disabled = false;
+      }
+    });
     card.querySelector('.review-replace').addEventListener('click', async () => {
       const file = card.querySelector('.review-file').files[0];
       if (!file) { $('reviewError').textContent = 'Choose a replacement file first.';
@@ -543,7 +564,10 @@ async function loadHistory() {
     $('history').innerHTML = projects.slice(0, 12).map(function (p) {
       const action = p.status === 'complete'
         ? '<a class="history-action" href="/api/projects/' + p.project_id + '/download">Download</a>'
-        : '<span></span>';
+        : (p.visual_source && ['ai_auto', 'authentic_auto', 'hybrid_auto'].includes(p.visual_source)
+          ? '<button type="button" class="history-action open-review" data-project-id="' +
+            esc(p.project_id) + '">Open project</button>'
+          : '<span></span>');
       return '<div class="history-item"><div><div class="history-title">' +
         esc(p.title || p.project_id) + '</div><div class="history-meta">' +
         esc(p.project_id) + ' · ' + (p.video_mode === 'long' ? 'Long' : 'Short') + ' · ' +
@@ -557,6 +581,14 @@ async function loadHistory() {
 }
 
 $('refreshHistory').addEventListener('click', loadHistory);
+$('history').addEventListener('click', function(event) {
+  const target = event.target.closest('.open-review');
+  if (target) startPolling(target.dataset.projectId);
+});
+$('aiAdminToken').addEventListener('change', function () {
+  reviewSignature = '';
+  if ($('approveVideo').dataset.projectId) startPolling($('approveVideo').dataset.projectId);
+});
 $('copyTitle').addEventListener('click', function () {
   navigator.clipboard.writeText($('metadataTitle').textContent || '');
 });
