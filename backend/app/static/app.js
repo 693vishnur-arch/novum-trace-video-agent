@@ -132,15 +132,18 @@ async function previewStoryboard() {
     const plannedAI = (p.visual_plan || []).filter(x => x.visual_type === 'ai').length;
     const maxAI = Math.min(plannedAI, Number($('max_generations').value) || 0);
     const estimateUSD = maxAI * Number(p.estimated_usd_per_five_second_ai_scene || 0);
-    storyboardScenes.innerHTML = '<p><strong>Estimated AI generation cost:</strong> 
+    const estimatedNotice = '<p><strong>Estimated AI generation cost:</strong> $' +
+      estimateUSD.toFixed(2) + ' USD for up to ' + maxAI +
+      ' five-second scenes. Actual duration and provider billing may vary.</p>';
+    storyboardScenes.innerHTML = estimatedNotice + (p.visual_plan || []).map(function(plan) {
       return '<div class="candidate-scene" data-scene-index="' + plan.scene_index + '">' +
         '<strong>Scene ' + (plan.scene_index + 1) + '</strong><p>' + esc(plan.narration) + '</p>' +
         '<small>' + esc(plan.source_requirement) + '</small>' +
         '<label>Visual type<select>' +
         (visualSource.value === 'ai_auto' ? '' : '<option value="authentic"' +
-        (plan.visual_type === 'authentic' ? ' selected' : '') + '>Authentic licensed media</option>') +
+          (plan.visual_type === 'authentic' ? ' selected' : '') + '>Authentic licensed media</option>') +
         (visualSource.value === 'authentic_auto' ? '' : '<option value="ai"' +
-        (plan.visual_type === 'ai' ? ' selected' : '') + '>AI-generated illustration</option>') +
+          (plan.visual_type === 'ai' ? ' selected' : '') + '>AI-generated illustration</option>') +
         '</select></label>' +
         '<label>AI visual prompt<textarea rows="3" maxlength="1000">' +
         esc(plan.ai_prompt) + '</textarea></label></div>';
