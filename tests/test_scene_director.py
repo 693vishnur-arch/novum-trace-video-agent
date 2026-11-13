@@ -52,3 +52,13 @@ def test_uploaded_image_becomes_runway_data_uri(tmp_path):
     value = ai_video.image_data_uri(frame)
     assert value.startswith("data:image/png;base64,")
     assert len(value) > 22
+
+
+def test_generated_scene_has_visible_illustration_disclosure(tmp_path):
+    from backend.app.models import Scene
+    from backend.app.services.captions import build_ass
+    output = tmp_path / "captions.ass"
+    build_ass([Scene(index=0, start=0, end=5, duration=5,
+                     text="An illustrated server room.", clip_name="ai_00.mp4")],
+              output, "", "", 5.0)
+    assert "AI-GENERATED ILLUSTRATION" in output.read_text()
