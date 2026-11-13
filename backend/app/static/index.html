@@ -141,6 +141,15 @@
             <div id="stockCandidates" class="candidate-list hidden"></div>
           </section>
 
+          <section id="storyboardSection" class="stock-box hidden">
+            <h3>Documentary storyboard approval</h3>
+            <p>Review each scene before the paid generation begins. Times in this preview are estimates; final timing comes from narration alignment.</p>
+            <button class="secondary wide" type="button" id="previewStoryboard">Preview / refresh storyboard</button>
+            <div id="storyboardScenes" class="candidate-list"></div>
+            <label class="check-row"><input type="checkbox" id="storyboard_approved" name="storyboard_approved" value="true"><span>Approve this storyboard and any paid AI scenes</span></label>
+            <input id="scene_overrides" type="hidden" name="scene_overrides" value="[]">
+            <div id="storyboardError" class="error hidden"></div>
+          </section>
           <div class="upload-grid">
             <label class="upload-card">
               <span class="upload-icon">A</span>
