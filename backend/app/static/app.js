@@ -134,10 +134,12 @@ async function previewStoryboard() {
       return '<div class="candidate-scene" data-scene-index="' + plan.scene_index + '">' +
         '<strong>Scene ' + (plan.scene_index + 1) + '</strong><p>' + esc(plan.narration) + '</p>' +
         '<small>' + esc(plan.source_requirement) + '</small>' +
-        '<label>Visual type<select><option value="authentic"' +
-        (plan.visual_type === 'authentic' ? ' selected' : '') + '>Authentic licensed media</option>' +
-        '<option value="ai"' + (plan.visual_type === 'ai' ? ' selected' : '') +
-        '>AI-generated illustration</option></select></label>' +
+        '<label>Visual type<select>' +
+        (visualSource.value === 'ai_auto' ? '' : '<option value="authentic"' +
+        (plan.visual_type === 'authentic' ? ' selected' : '') + '>Authentic licensed media</option>') +
+        (visualSource.value === 'authentic_auto' ? '' : '<option value="ai"' +
+        (plan.visual_type === 'ai' ? ' selected' : '') + '>AI-generated illustration</option>') +
+        '</select></label>' +
         '<label>AI visual prompt<textarea rows="3" maxlength="1000">' +
         esc(plan.ai_prompt) + '</textarea></label></div>';
     }).join('');
