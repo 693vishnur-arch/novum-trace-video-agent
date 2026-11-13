@@ -496,15 +496,19 @@ def _process_project(
                 prefer_portrait=prefer_portrait,
             )
 
+        is_documentary = visual_source in {"ai_auto", "authentic_auto", "hybrid_auto"}
         state.update({
-            "status": "rendering",
-            "progress": 48,
+            "status": "awaiting_review" if is_documentary else "rendering",
+            "progress": 65 if is_documentary else 48,
             "visual_count": len(visual_paths),
             "stock_clip_count": len(credits),
             "stock_credits": credits,
             "scenes": [scene.to_dict() for scene in scenes],
         })
         save_state(project_dir, state)
+        if is_documentary:
+            # Do not render the final MP4 before a human approves the actual footage.
+            return
 
         final_path = render_video(
             project_dir=project_dir,
