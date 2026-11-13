@@ -177,6 +177,7 @@ def _download_stock_for_scenes(
     max_clips: int,
     selections_raw: str,
     prefer_portrait: bool,
+    scene_queries: dict[int, str] | None = None,
 ) -> tuple[list[Path], list[dict[str, Any]]]:
     """Attach stock clips to scenes while keeping strict download limits."""
     if visual_source not in {"stock_auto", "stock_mix"}:
@@ -212,7 +213,8 @@ def _download_stock_for_scenes(
         if len(stock_paths) >= max_clips:
             break
 
-        query = build_search_query(scene.text, fallback=f"{title} {prompt}")
+        query = (scene_queries or {}).get(int(scene.index)) or build_search_query(
+            scene.text, fallback=f"{title} {prompt}")
         candidate: dict[str, Any] | None = None
         choices: list[dict[str, Any]] = []
 
@@ -443,6 +445,7 @@ def _process_project(
                         title=title, prompt=prompt, visual_source="stock_auto",
                         providers=stock_providers, max_clips=stock_max_clips,
                         selections_raw=stock_selections, prefer_portrait=prefer_portrait,
+                        scene_queries={p.scene_index: p.search_query for p in plans},
                     )
                 # Commons is conservative: public-domain/CC0 stills only.
                 existing = _historical_stock_ids()
@@ -451,7 +454,7 @@ def _process_project(
                         continue
                     try:
                         choices = commons.search_images(
-                            build_search_query(scene.text, fallback=title), limit=10)
+                            plans[int(scene.index)].search_query, limit=10)
                     except (OSError, ValueError, KeyError):
                         continue
                     for image in choices:
