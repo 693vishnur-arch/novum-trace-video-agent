@@ -592,6 +592,7 @@ def create_project(
         raise HTTPException(status_code=400, detail="Invalid visual source")
     if video_mode not in {"short", "long"}:
         raise HTTPException(status_code=400, detail="Invalid video mode")
+    max_generations = min(max(max_generations, 0), 20)
     if visual_source == "ai_auto" and max_generations <= 0:
         raise HTTPException(status_code=400, detail="AI-only mode requires a positive AI generation budget")
     if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0 and not ai_video.configured():
