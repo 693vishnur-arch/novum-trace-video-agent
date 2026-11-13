@@ -15,6 +15,13 @@ from pathlib import Path
 BASE = "https://api.dev.runwayml.com/v1"
 VERSION = "2024-11-06"
 MAX_VIDEO_BYTES = 60 * 1024 * 1024
+GEN45_CREDITS_PER_SECOND = 12
+
+
+def estimated_credits(duration: float) -> int:
+    """Gen-4.5 list-price estimate; actual billing is determined by Runway."""
+    return max(2, min(10, round(duration))) * GEN45_CREDITS_PER_SECOND
+
 
 
 class AIVideoError(RuntimeError):
