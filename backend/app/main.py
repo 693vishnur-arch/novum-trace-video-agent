@@ -979,6 +979,89 @@ def _finalize_review_project(project_id: str) -> None:
             save_state(project_dir, state)
 
 
+def _regenerate_review_scene(project_id: str, scene_index: int) -> None:
+    with _project_lock:
+        project_dir, state = _review_state(project_id)
+        budget = state.get("generation_budget") or {}
+        record: dict[str, Any] | None = None
+        try:
+            plan = (state.get("visual_plan") or [])[scene_index]
+            prompt = str(plan["ai_prompt"])
+            scenes = state["scenes"]
+            current_name = str(scenes[scene_index].get("clip_name") or "")
+            current_path = project_dir / "uploads" / current_name
+            image_uri = (ai_video.image_data_uri(current_path)
+                         if current_name and current_path.is_file() and is_image(current_path)
+                         else None)
+            task_id = ai_video.create_task(
+                prompt, portrait=state["video_mode"] == "short",
+                image_uri=image_uri,
+                duration=max(2, min(10, round(float(plan["duration"])))),
+            )
+            budget["used"] = int(budget.get("used", 0)) + 1
+            budget["remaining"] = max(int(budget.get("maximum", 0)) - budget["used"], 0)
+            record = {"scene_index": scene_index, "task_id": task_id,
+                      "status": "PENDING", "synthetic": True,
+                      "label": plan["synthetic_label"]}
+            state.setdefault("ai_tasks", []).append(record)
+            save_state(project_dir, state)
+
+            def update_task(task: dict[str, Any]) -> None:
+                record["status"] = task.get("status", "UNKNOWN")
+                save_state(project_dir, state)
+
+            url = ai_video.wait_task(task_id, on_update=update_task)
+            dest = project_dir / "uploads" / f"ai_review_{scene_index:02d}.mp4"
+            ai_video.download_result(url, dest)
+            scenes[scene_index]["clip_name"] = dest.name
+            record["status"] = "SUCCEEDED"
+            record["filename"] = dest.name
+            state["stock_credits"] = [credit for credit in state.get("stock_credits", [])
+                                      if credit.get("scene_index") != scene_index]
+            state["stock_clip_count"] = len(state["stock_credits"])
+            credits_path = project_dir / "credits.txt"
+            if state["stock_credits"]:
+                write_credits(credits_path, state["stock_credits"])
+            else:
+                credits_path.unlink(missing_ok=True)
+            state["ai_clip_count"] = sum(
+                str(scene.get("clip_name") or "").startswith("ai_") for scene in scenes)
+            state["visual_count"] = sum(bool(scene.get("clip_name")) for scene in scenes)
+            state["review_error"] = None
+        except Exception as exc:
+            if record is not None:
+                record["status"] = "FAILED"
+                record["error"] = str(exc)
+            state["review_error"] = str(exc)
+        finally:
+            state["status"] = "awaiting_review"
+            state["progress"] = 65
+            save_state(project_dir, state)
+
+
+@app.post("/api/projects/{project_id}/scenes/{scene_index}/regenerate")
+def regenerate_review_scene(project_id: str, scene_index: int,
+                            background_tasks: BackgroundTasks,
+                            x_novum_admin_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_admin(x_novum_admin_token)
+    project_dir, state = _review_state(project_id)
+    if state.get("status") != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Project is not awaiting review")
+    if state["visual_source"] == "authentic_auto":
+        raise HTTPException(status_code=400, detail="Authentic-only mode prohibits AI footage")
+    if not 0 <= scene_index < len(state.get("scenes") or []):
+        raise HTTPException(status_code=404, detail="Scene not found")
+    budget = state.get("generation_budget") or {}
+    if int(budget.get("used") or 0) >= int(budget.get("maximum") or 0):
+        raise HTTPException(status_code=409, detail="AI generation budget is exhausted")
+    if not ai_video.configured():
+        raise HTTPException(status_code=400, detail="Runway key is not configured")
+    state.update({"status": f"regenerating scene {scene_index + 1}", "progress": 65})
+    save_state(project_dir, state)
+    background_tasks.add_task(_regenerate_review_scene, project_id, scene_index)
+    return {"status": "regenerating", "scene_index": scene_index}
+
+
 @app.post("/api/projects/{project_id}/approve")
 def approve_review_project(project_id: str, background_tasks: BackgroundTasks,
                            x_novum_admin_token: str | None = Header(default=None)) -> dict[str, str]:
