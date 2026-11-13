@@ -15,6 +15,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException,
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.app.models import Scene, WordTiming
 from backend.app.config import ALLOWED_AUDIO, ALLOWED_IMAGE, ALLOWED_VIDEO, DATA_DIR, STATIC_DIR, video_profile
 from backend.app.services.budget import GenerationBudget
 from backend.app.services.media import probe_duration, is_image
@@ -598,6 +599,24 @@ def _parse_scene_overrides(raw: str, scene_count: int) -> dict[int, dict[str, st
     return overrides
 
 
+def _require_admin(token: str | None) -> None:
+    expected = os.getenv("NOVUM_ADMIN_TOKEN", "").strip()
+    if not expected or not hmac.compare_digest(expected, token or ""):
+        raise HTTPException(status_code=403, detail="A valid documentary administrator token is required")
+
+
+def _review_state(project_id: str) -> tuple[Path, dict[str, Any]]:
+    if len(project_id) != 12 or any(ch not in "0123456789abcdef" for ch in project_id):
+        raise HTTPException(status_code=404, detail="Invalid project id")
+    try:
+        state = load_state(project_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+    if state.get("visual_source") not in {"ai_auto", "authentic_auto", "hybrid_auto"}:
+        raise HTTPException(status_code=400, detail="This is not a documentary project")
+    return DATA_DIR / project_id, state
+
+
 @app.post("/api/ai/storyboard")
 def preview_storyboard(
     title: str = Form(""), script: str = Form(""),
@@ -743,10 +762,8 @@ def create_project(
                 raise ValueError("Authentic-only mode cannot use AI scenes")
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0:
-        expected_token = os.getenv("NOVUM_ADMIN_TOKEN", "").strip()
-        if not expected_token or not hmac.compare_digest(expected_token, x_novum_admin_token or ""):
-            raise HTTPException(status_code=403, detail="A valid AI-generation administrator token is required")
+    if visual_source in {"ai_auto", "authentic_auto", "hybrid_auto"}:
+        _require_admin(x_novum_admin_token)
     if visual_source == "ai_auto" and max_generations <= 0:
         raise HTTPException(status_code=400, detail="AI-only mode requires a positive AI generation budget")
     if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0 and not ai_video.configured():
@@ -857,6 +874,122 @@ def project(project_id: str) -> dict[str, object]:
         return load_state(project_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Project not found") from None
+
+
+
+@app.get("/api/projects/{project_id}/scenes/{scene_index}/media")
+def review_scene_media(project_id: str, scene_index: int,
+                       x_novum_admin_token: str | None = Header(default=None)) -> FileResponse:
+    _require_admin(x_novum_admin_token)
+    project_dir, state = _review_state(project_id)
+    scenes = state.get("scenes") or []
+    if not 0 <= scene_index < len(scenes):
+        raise HTTPException(status_code=404, detail="Scene not found")
+    name = str(scenes[scene_index].get("clip_name") or "")
+    if not name or Path(name).name != name:
+        raise HTTPException(status_code=404, detail="Scene has no media")
+    path = project_dir / "uploads" / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Scene media is unavailable")
+    mime = "video/mp4" if path.suffix.lower() in ALLOWED_VIDEO else (
+        "image/png" if path.suffix.lower() == ".png" else
+        "image/webp" if path.suffix.lower() == ".webp" else "image/jpeg")
+    return FileResponse(path, media_type=mime)
+
+
+@app.post("/api/projects/{project_id}/scenes/{scene_index}/replace")
+def replace_review_scene(project_id: str, scene_index: int,
+                         replacement: UploadFile = File(...),
+                         x_novum_admin_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_admin(x_novum_admin_token)
+    project_dir, state = _review_state(project_id)
+    scenes = state.get("scenes") or []
+    if state.get("status") != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Project is not awaiting review")
+    if not 0 <= scene_index < len(scenes):
+        raise HTTPException(status_code=404, detail="Scene not found")
+    ext = Path(replacement.filename or "").suffix.lower()
+    if ext not in ALLOWED_IMAGE | ALLOWED_VIDEO:
+        raise HTTPException(status_code=400, detail="Unsupported replacement media")
+    path = project_dir / "uploads" / f"review_{scene_index:02d}{ext}"
+    count = 0
+    try:
+        with path.open("wb") as output:
+            while chunk := replacement.file.read(1024 * 1024):
+                count += len(chunk)
+                if count > 60 * 1024 * 1024:
+                    raise ValueError("Replacement exceeds 60 MB")
+                output.write(chunk)
+    except (OSError, ValueError) as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if count < 1024:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Replacement media is empty")
+    scenes[scene_index]["clip_name"] = path.name
+    state["stock_credits"] = [
+        credit for credit in state.get("stock_credits", [])
+        if int(credit.get("scene_index", -1)) != scene_index
+    ]
+    state["stock_clip_count"] = len(state["stock_credits"])
+    credits_path = project_dir / "credits.txt"
+    if state["stock_credits"]:
+        write_credits(credits_path, state["stock_credits"])
+    else:
+        credits_path.unlink(missing_ok=True)
+    state["visual_count"] = sum(bool(scene.get("clip_name")) for scene in scenes)
+    save_state(project_dir, state)
+    return {"status": "replaced", "scene_index": scene_index}
+
+
+def _finalize_review_project(project_id: str) -> None:
+    with _project_lock:
+        project_dir, state = _review_state(project_id)
+        try:
+            scenes = []
+            for item in state.get("scenes") or []:
+                data = dict(item)
+                data["words"] = [WordTiming(**w) for w in data.get("words", [])]
+                scenes.append(Scene(**data))
+            upload_dir = project_dir / "uploads"
+            visual_paths = [upload_dir / scene.clip_name for scene in scenes if scene.clip_name]
+            clean_narration = project_dir / "work" / "narration_clean.wav"
+            narration = clean_narration if clean_narration.exists() else upload_dir / state["narration_file"]
+            music = upload_dir / state["music_file"] if state.get("music_file") else None
+            state.update({"status": "rendering", "progress": 80})
+            save_state(project_dir, state)
+            final_path = render_video(
+                project_dir=project_dir, scenes=scenes, visual_paths=visual_paths,
+                narration_path=narration, total_duration=float(state["duration"]),
+                hook=state.get("hook") or "", ending_question=state.get("ending_question") or "",
+                music_path=music, narration_prepared=clean_narration.exists(),
+                video_mode=state["video_mode"],
+            )
+            state.update({
+                "status": "complete", "progress": 100, "completed_at": now_iso(),
+                "output_file": final_path.name,
+                "metadata": build_metadata(state["title"], state["prompt"], state["script"],
+                                           video_mode=state["video_mode"]),
+            })
+            save_state(project_dir, state)
+            cleanup_work(project_dir)
+        except Exception as exc:
+            state.update({"status": "awaiting_review", "progress": 65,
+                          "review_error": str(exc)})
+            save_state(project_dir, state)
+
+
+@app.post("/api/projects/{project_id}/approve")
+def approve_review_project(project_id: str, background_tasks: BackgroundTasks,
+                           x_novum_admin_token: str | None = Header(default=None)) -> dict[str, str]:
+    _require_admin(x_novum_admin_token)
+    project_dir, state = _review_state(project_id)
+    if state.get("status") != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Project is not awaiting review")
+    state.update({"status": "rendering", "progress": 75, "review_error": None})
+    save_state(project_dir, state)
+    background_tasks.add_task(_finalize_review_project, project_id)
+    return {"status": "rendering", "project_id": project_id}
 
 
 @app.get("/api/projects/{project_id}/video")
