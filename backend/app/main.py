@@ -413,9 +413,18 @@ def _process_project(
                         item["status"] = task.get("status", "UNKNOWN")
                         save_state(project_dir, state)
 
-                    url = ai_video.wait_task(task_id, on_update=update_task)
-                    destination = project_dir / "uploads" / f"ai_{plan.scene_index:02d}.mp4"
-                    ai_video.download_result(url, destination)
+                    try:
+                        url = ai_video.wait_task(task_id, on_update=update_task)
+                        destination = project_dir / "uploads" / f"ai_{plan.scene_index:02d}.mp4"
+                        ai_video.download_result(url, destination)
+                    except (ai_video.AIVideoError, OSError, ValueError) as exc:
+                        record["status"] = "FAILED"
+                        record["error"] = str(exc)
+                        save_state(project_dir, state)
+                        if director_mode == "ai":
+                            raise
+                        # Hybrid mode keeps this scene unassigned for licensed-media fallback.
+                        continue
                     record["status"] = "SUCCEEDED"
                     record["filename"] = destination.name
                     scenes[plan.scene_index].clip_name = destination.name
