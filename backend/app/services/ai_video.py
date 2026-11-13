@@ -16,7 +16,7 @@ from pathlib import Path
 BASE = "https://api.dev.runwayml.com/v1"
 VERSION = "2024-11-06"
 MAX_VIDEO_BYTES = 60 * 1024 * 1024
-MAX_IMAGE_BYTES = 4 * 1024 * 1024
+MAX_IMAGE_BYTES = 3 * 1024 * 1024
 GEN45_CREDITS_PER_SECOND = 12
 
 
@@ -36,7 +36,7 @@ def image_data_uri(path: Path) -> str:
     if not mime:
         raise AIVideoError("Unsupported reference image format")
     if path.stat().st_size > MAX_IMAGE_BYTES:
-        raise AIVideoError("Reference image must be under 4 MB")
+        raise AIVideoError("Reference image must be under 3 MB")
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
