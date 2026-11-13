@@ -44,3 +44,11 @@ def test_runway_rejects_untrusted_image(monkeypatch):
 def test_runway_task_wait(monkeypatch):
     monkeypatch.setattr(ai_video, "get_task", lambda _id: {"status": "SUCCEEDED", "output": ["https://example.org/clip.mp4"]})
     assert ai_video.wait_task("task123") == "https://example.org/clip.mp4"
+
+
+def test_uploaded_image_becomes_runway_data_uri(tmp_path):
+    frame = tmp_path / "frame.png"
+    frame.write_bytes(b"test-image")
+    value = ai_video.image_data_uri(frame)
+    assert value.startswith("data:image/png;base64,")
+    assert len(value) > 22
