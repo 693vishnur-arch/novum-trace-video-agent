@@ -451,7 +451,10 @@ function applyState(state) {
   } else { planBox.classList.add('hidden'); }
   $('stockValue').textContent = state.stock_clip_count || 0;
   if (Number(state.estimated_ai_usd || 0) > 0) {
-    $('statusSubtitle').textContent += ' · estimated AI credits 
+    $('statusSubtitle').textContent +=
+      ' · estimated AI cost $' + Number(state.estimated_ai_usd).toFixed(2);
+  }
+
   if (state.status === 'failed') {
     renderError.textContent = state.error || 'Render failed.';
     renderError.classList.remove('hidden');
