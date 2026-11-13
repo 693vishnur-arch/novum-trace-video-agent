@@ -20,6 +20,13 @@ const stockSelections = $('stock_selections');
 const stockCandidates = $('stockCandidates');
 const stockSearchError = $('stockSearchError');
 const findStockButton = $('findStockButton');
+const storyboardSection = $('storyboardSection');
+const storyboardScenes = $('storyboardScenes');
+const storyboardApproved = $('storyboard_approved');
+const sceneOverrides = $('scene_overrides');
+let storyboardSignature = '';
+let reviewSignature = '';
+let reviewObjectURLs = [];
 let pollTimer = null;
 let pollGeneration = 0;
 
@@ -81,13 +88,91 @@ function updateVideoMode() {
   stockCandidates.classList.add('hidden');
 }
 
+function isDocumentaryMode() {
+  return ['ai_auto', 'authentic_auto', 'hybrid_auto'].includes(visualSource.value);
+}
+function resetStoryboard() {
+  storyboardApproved.checked = false;
+  storyboardSignature = '';
+  sceneOverrides.value = '[]';
+  storyboardScenes.innerHTML = '';
+}
+function storyboardInputSignature() {
+  return JSON.stringify([$('title').value, $('script').value, visualSource.value,
+    videoMode.value, stockMaxClips.value]);
+}
+function syncStoryboardOverrides() {
+  const items = [];
+  storyboardScenes.querySelectorAll('[data-scene-index]').forEach(function (el) {
+    const i = Number(el.dataset.sceneIndex);
+    const type = el.querySelector('select');
+    const prompt = el.querySelector('textarea');
+    if (type && prompt) items.push({scene_index:i, visual_type:type.value,
+      ai_prompt:prompt.value.trim()});
+  });
+  sceneOverrides.value = JSON.stringify(items);
+}
+function updateStoryboardControl() {
+  storyboardSection.classList.toggle('hidden', !isDocumentaryMode());
+  resetStoryboard();
+}
+async function previewStoryboard() {
+  const error = $('storyboardError');
+  error.classList.add('hidden');
+  const data = new FormData();
+  data.set('title', $('title').value.trim());
+  data.set('script', $('script').value.trim());
+  data.set('visual_source', visualSource.value);
+  data.set('stock_max_clips', stockMaxClips.value);
+  data.set('video_mode', videoMode.value);
+  try {
+    const r = await fetch('/api/ai/storyboard', {method:'POST', body:data});
+    const p = await r.json();
+    if (!r.ok) throw new Error(p.detail || 'Storyboard preview failed');
+    const plannedAI = (p.visual_plan || []).filter(x => x.visual_type === 'ai').length;
+    const maxAI = Math.min(plannedAI, Number($('max_generations').value) || 0);
+    const estimateUSD = maxAI * Number(p.estimated_usd_per_five_second_ai_scene || 0);
+    const estimatedNotice = '<p><strong>Estimated AI generation cost:</strong> $' +
+      estimateUSD.toFixed(2) + ' USD for up to ' + maxAI +
+      ' five-second scenes. Actual duration and provider billing may vary.</p>';
+    storyboardScenes.innerHTML = estimatedNotice + (p.visual_plan || []).map(function(plan) {
+      return '<div class="candidate-scene" data-scene-index="' + plan.scene_index + '">' +
+        '<strong>Scene ' + (plan.scene_index + 1) + '</strong><p>' + esc(plan.narration) + '</p>' +
+        '<small>' + esc(plan.source_requirement) + '</small>' +
+        '<label>Visual type<select>' +
+        (visualSource.value === 'ai_auto' ? '' : '<option value="authentic"' +
+          (plan.visual_type === 'authentic' ? ' selected' : '') + '>Authentic licensed media</option>') +
+        (visualSource.value === 'authentic_auto' ? '' : '<option value="ai"' +
+          (plan.visual_type === 'ai' ? ' selected' : '') + '>AI-generated illustration</option>') +
+        '</select></label>' +
+        '<label>AI visual prompt<textarea rows="3" maxlength="1000">' +
+        esc(plan.ai_prompt) + '</textarea></label></div>';
+    }).join('');
+    storyboardSignature = storyboardInputSignature();
+    storyboardApproved.checked = false;
+    syncStoryboardOverrides();
+  } catch (e) {
+    error.textContent = e.message;
+    error.classList.remove('hidden');
+  }
+}
+$('previewStoryboard').addEventListener('click', previewStoryboard);
+storyboardScenes.addEventListener('input', function () {
+  storyboardApproved.checked = false;
+  syncStoryboardOverrides();
+});
+storyboardScenes.addEventListener('change', function () {
+  storyboardApproved.checked = false;
+  syncStoryboardOverrides();
+});
+
 function updateStockControls() {
-  const enabled = visualSource.value !== 'upload';
+  const enabled = !['upload', 'ai_auto'].includes(visualSource.value);
   findStockButton.disabled = !enabled;
   selectionMode.disabled = !enabled;
   stockProviders.disabled = !enabled;
   stockMaxClips.disabled = !enabled;
-  preferPortrait.disabled = !enabled;
+  preferPortrait.disabled = false;
   if (!enabled || selectionMode.value === 'auto') {
     stockSelections.value = '';
     stockCandidates.classList.add('hidden');
@@ -98,8 +183,15 @@ function updateStockControls() {
 videoMode.addEventListener('change', function () {
   updateVideoMode();
   updateStockControls();
+  updateStoryboardControl();
 });
-visualSource.addEventListener('change', updateStockControls);
+visualSource.addEventListener('change', function () {
+  updateStockControls();
+  updateStoryboardControl();
+});
+stockMaxClips.addEventListener('change', resetStoryboard);
+$('title').addEventListener('input', resetStoryboard);
+$('script').addEventListener('input', resetStoryboard);
 selectionMode.addEventListener('change', updateStockControls);
 
 async function loadStockStatus() {
@@ -224,17 +316,144 @@ function renderCredits(state) {
   creditsLink.classList.remove('hidden');
 }
 
+async function renderMediaReview(state) {
+  const panel = $('mediaReview');
+  if (state.status !== 'awaiting_review') {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  const scenes = state.scenes || [];
+  const signature = state.project_id + JSON.stringify(scenes.map(s => s.clip_name));
+  if (reviewSignature === signature) return;
+  reviewSignature = signature;
+  reviewObjectURLs.forEach(url => URL.revokeObjectURL(url));
+  reviewObjectURLs = [];
+  $('reviewScenes').innerHTML = scenes.map((scene, index) => {
+    return '<div class="candidate-scene" data-review-index="' + index + '">' +
+      '<strong>Scene ' + (index + 1) + '</strong><p>' + esc(scene.text) + '</p>' +
+      '<div class="review-media"><small>Loading preview...</small></div>' +
+      '<label>Replace clip or still image<input type="file" accept="video/*,image/*" class="review-file"></label>' +
+      '<button type="button" class="secondary review-replace">Replace this scene</button>' +
+      (state.visual_source !== 'authentic_auto' &&
+        Number(state.generation_budget?.remaining || 0) > 0
+        ? '<button type="button" class="secondary review-regenerate">Regenerate AI clip (paid)</button>' : '') +
+      '</div>';
+  }).join('');
+  const token = $('aiAdminToken').value.trim();
+  $('reviewScenes').querySelectorAll('[data-review-index]').forEach(async (card) => {
+    const index = Number(card.dataset.reviewIndex);
+    const scene = scenes[index];
+    const mediaArea = card.querySelector('.review-media');
+    if (!scene.clip_name) {
+      mediaArea.textContent = 'No matching visual. Upload a replacement before rendering.';
+    } else {
+      try {
+        const r = await fetch('/api/projects/' + state.project_id +
+          '/scenes/' + index + '/media', {headers: {'X-Novum-Admin-Token': token}});
+        if (!r.ok) throw new Error('Preview unavailable');
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        reviewObjectURLs.push(url);
+        mediaArea.innerHTML = blob.type.startsWith('video/')
+          ? '<video controls playsinline style="max-height:260px;max-width:100%" src="' + url + '"></video>'
+          : '<img alt="Scene preview" style="max-height:260px;max-width:100%" src="' + url + '">';
+      } catch (e) { mediaArea.textContent = e.message; }
+    }
+    const regenButton = card.querySelector('.review-regenerate');
+    if (regenButton) regenButton.addEventListener('click', async () => {
+      regenButton.disabled = true;
+      try {
+        const r = await fetch('/api/projects/' + state.project_id +
+          '/scenes/' + index + '/regenerate', {method:'POST',
+          headers:{'X-Novum-Admin-Token':$('aiAdminToken').value.trim()}});
+        const p = await r.json();
+        if (!r.ok) throw new Error(p.detail || 'Regeneration failed');
+        $('mediaReview').classList.add('hidden');
+        reviewSignature = '';
+        startPolling(state.project_id);
+      } catch (e) {
+        $('reviewError').textContent = e.message;
+        $('reviewError').classList.remove('hidden');
+      } finally {
+        regenButton.disabled = false;
+      }
+    });
+    card.querySelector('.review-replace').addEventListener('click', async () => {
+      const file = card.querySelector('.review-file').files[0];
+      if (!file) { $('reviewError').textContent = 'Choose a replacement file first.';
+        $('reviewError').classList.remove('hidden'); return; }
+      if (file.size > 60 * 1024 * 1024) {
+        $('reviewError').textContent = 'Replacement must be below 60 MB.';
+        $('reviewError').classList.remove('hidden'); return;
+      }
+      const body = new FormData();
+      body.set('replacement', file);
+      try {
+        const r = await fetch('/api/projects/' + state.project_id +
+          '/scenes/' + index + '/replace', {method:'POST', body,
+          headers:{'X-Novum-Admin-Token':$('aiAdminToken').value.trim()}});
+        const p = await r.json();
+        if (!r.ok) throw new Error(p.detail || 'Replace failed');
+        reviewSignature = '';
+        const latest = await fetch('/api/projects/' + state.project_id).then(r=>r.json());
+        applyState(latest);
+      } catch (e) {
+        $('reviewError').textContent = e.message;
+        $('reviewError').classList.remove('hidden');
+      }
+    });
+  });
+}
+
+$('approveVideo').addEventListener('click', async () => {
+  $('reviewError').classList.add('hidden');
+  const projectId = $('approveVideo').dataset.projectId;
+  if (!projectId) return;
+  $('approveVideo').disabled = true;
+  try {
+    const r = await fetch('/api/projects/' + projectId + '/approve', {method:'POST',
+      headers: {'X-Novum-Admin-Token': $('aiAdminToken').value.trim()}});
+    const p = await r.json();
+    if (!r.ok) throw new Error(p.detail || 'Could not approve video');
+    $('mediaReview').classList.add('hidden');
+    startPolling(projectId);
+  } catch (e) {
+    $('reviewError').textContent = e.message;
+    $('reviewError').classList.remove('hidden');
+  } finally {
+    $('approveVideo').disabled = false;
+  }
+});
+
 function applyState(state) {
   setActive();
   renderError.classList.add('hidden');
   $('statusLabel').textContent = state.status || 'unknown';
+  $('approveVideo').dataset.projectId = state.project_id || '';
+  renderMediaReview(state);
   $('progressValue').textContent = String(state.progress || 0) + '%';
   $('progressBar').style.width = String(state.progress || 0) + '%';
   $('statusSubtitle').textContent = state.title || state.project_id;
   $('durationValue').textContent = fmtDuration(state.duration);
   $('scenesValue').textContent = Array.isArray(state.scenes) ? state.scenes.length : '-';
-  $('generationValue').textContent = state.generation_budget && state.generation_budget.used || 0;
+  $('generationValue').textContent = state.ai_clip_count || 0;
+  const plans = Array.isArray(state.visual_plan) ? state.visual_plan : [];
+  const planBox = $('visualPlan');
+  if (plans.length) {
+    planBox.classList.remove('hidden');
+    planBox.innerHTML = '<strong>Documentary scene plan · AI footage is illustrative</strong>' + plans.map(function(p) {
+      const task = (state.ai_tasks || []).find(t => t.scene_index === p.scene_index);
+      return '<div class="credit-row"><strong>Scene ' + (p.scene_index + 1) + '</strong> ' + esc(p.visual_type) +
+        ' · ' + esc(p.camera) + ' · ' + esc(task ? task.status : p.source_requirement) +
+        '<small>' + esc(p.narration) + '</small></div>';
+    }).join('');
+  } else { planBox.classList.add('hidden'); }
   $('stockValue').textContent = state.stock_clip_count || 0;
+  if (Number(state.estimated_ai_usd || 0) > 0) {
+    $('statusSubtitle').textContent +=
+      ' · estimated AI cost $' + Number(state.estimated_ai_usd).toFixed(2);
+  }
 
   if (state.status === 'failed') {
     renderError.textContent = state.error || 'Render failed.';
@@ -301,6 +520,10 @@ form.addEventListener('submit', async function (event) {
   createButton.disabled = true;
   createButton.textContent = 'Uploading...';
   try {
+    if (isDocumentaryMode() &&
+      (!storyboardApproved.checked || storyboardSignature !== storyboardInputSignature())) {
+      throw new Error('Preview and approve the current documentary storyboard before creating a video.');
+    }
     const data = new FormData(form);
     data.set('prefer_portrait', preferPortrait.checked ? 'true' : 'false');
     if (selectionMode.value === 'review') {
@@ -309,7 +532,11 @@ form.addEventListener('submit', async function (event) {
     } else {
       data.set('stock_selections', '');
     }
-    const r = await fetch('/api/projects', {method:'POST', body:data});
+    const token = $('aiAdminToken').value.trim();
+    const isDocumentary = isDocumentaryMode();
+    if (isDocumentary && !token) throw new Error('Administrator token required for documentary projects.');
+    const headers = isDocumentary ? {'X-Novum-Admin-Token': token} : {};
+    const r = await fetch('/api/projects', {method:'POST', body:data, headers});
     const p = await r.json();
     if (!r.ok) throw new Error(p.detail || 'Could not create project');
     setActive();
@@ -344,7 +571,10 @@ async function loadHistory() {
     $('history').innerHTML = projects.slice(0, 12).map(function (p) {
       const action = p.status === 'complete'
         ? '<a class="history-action" href="/api/projects/' + p.project_id + '/download">Download</a>'
-        : '<span></span>';
+        : (p.visual_source && ['ai_auto', 'authentic_auto', 'hybrid_auto'].includes(p.visual_source)
+          ? '<button type="button" class="history-action open-review" data-project-id="' +
+            esc(p.project_id) + '">Open project</button>'
+          : '<span></span>');
       return '<div class="history-item"><div><div class="history-title">' +
         esc(p.title || p.project_id) + '</div><div class="history-meta">' +
         esc(p.project_id) + ' · ' + (p.video_mode === 'long' ? 'Long' : 'Short') + ' · ' +
@@ -358,6 +588,14 @@ async function loadHistory() {
 }
 
 $('refreshHistory').addEventListener('click', loadHistory);
+$('history').addEventListener('click', function(event) {
+  const target = event.target.closest('.open-review');
+  if (target) startPolling(target.dataset.projectId);
+});
+$('aiAdminToken').addEventListener('change', function () {
+  reviewSignature = '';
+  if ($('approveVideo').dataset.projectId) startPolling($('approveVideo').dataset.projectId);
+});
 $('copyTitle').addEventListener('click', function () {
   navigator.clipboard.writeText($('metadataTitle').textContent || '');
 });
@@ -365,7 +603,19 @@ $('copyDescription').addEventListener('click', function () {
   navigator.clipboard.writeText($('metadataDescription').textContent || '');
 });
 
+async function loadAIStatus() {
+  try {
+    const r = await fetch('/api/ai/status');
+    const state = await r.json();
+    $('aiStatus').textContent = state.runway_configured
+      ? 'Runway Dev configured · paid generation enabled when budget is positive'
+      : 'Runway key missing · AI generation requires RUNWAYML_API_SECRET';
+  } catch (_) { $('aiStatus').textContent = 'Runway status unavailable'; }
+}
+
 updateVideoMode();
 updateStockControls();
+updateStoryboardControl();
 loadStockStatus();
+loadAIStatus();
 loadHistory();

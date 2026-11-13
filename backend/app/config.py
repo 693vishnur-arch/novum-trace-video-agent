@@ -1,7 +1,8 @@
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-DATA_DIR = BASE_DIR / "data" / "projects"
+DATA_DIR = Path(os.getenv("NOVUM_DATA_DIR", str(BASE_DIR / "data" / "projects"))).resolve()
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 OUTPUT_FPS = 24

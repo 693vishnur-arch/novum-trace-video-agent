@@ -664,6 +664,8 @@ def credit_record(candidate: dict[str, Any], *, scene_index: int | None = None) 
         "creator_url": str(candidate.get("creator_url") or ""),
         "source_url": str(candidate.get("page_url") or ""),
         "query": str(candidate.get("query") or ""),
+        "license": str(candidate.get("license") or "provider-specific stock license"),
+        "reuse_review_required": True,
     }
 
 
@@ -680,10 +682,16 @@ def write_credits(path: Path, credits: list[dict[str, Any]]) -> None:
         creator = credit.get("creator") or "contributor"
         source = credit.get("source_url") or ""
         query = credit.get("query") or ""
+        license_note = credit.get("license") or "Rights review required"
+        attribution = credit.get("attribution") or ""
         lines.append(f"{index}. {provider.title()} - {creator}")
         if query:
             lines.append(f"   Search: {query}")
         if source:
             lines.append(f"   Source: {source}")
+        lines.append(f"   License: {license_note}")
+        if attribution:
+            lines.append(f"   Attribution: {attribution}")
+        lines.append("   Confirm rights, trademarks and identifiable-person permissions before publishing.")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")

@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
+import hmac
 import shutil
 import traceback
 import threading
 from pathlib import Path
+from types import SimpleNamespace
+from dataclasses import replace
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.app.models import Scene, WordTiming
 from backend.app.config import ALLOWED_AUDIO, ALLOWED_IMAGE, ALLOWED_VIDEO, DATA_DIR, STATIC_DIR, video_profile
 from backend.app.services.budget import GenerationBudget
-from backend.app.services.media import probe_duration
+from backend.app.services.media import probe_duration, is_image
 from backend.app.services.metadata import build_metadata
-from backend.app.services.planner import derive_ending, derive_hook, plan_aligned_scenes
+from backend.app.services.planner import derive_ending, derive_hook, plan_aligned_scenes, visual_groups
 from backend.app.services.renderer import cleanup_work, render_video, _prepare_narration
 from backend.app.services.alignment import align_narration
 from backend.app.services.stock import (
@@ -33,6 +38,9 @@ from backend.app.services.stock import (
     search_stock,
     write_credits,
 )
+from backend.app.services.scene_director import make_plan, serialized
+from backend.app.services import ai_video, commons
+from backend.app.services.fingerprints import visual_hash, similar, historical_hashes
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
 app = FastAPI(title="Novum Trace Video Agent", version="1.5.8")
@@ -170,6 +178,7 @@ def _download_stock_for_scenes(
     max_clips: int,
     selections_raw: str,
     prefer_portrait: bool,
+    scene_queries: dict[int, str] | None = None,
 ) -> tuple[list[Path], list[dict[str, Any]]]:
     """Attach stock clips to scenes while keeping strict download limits."""
     if visual_source not in {"stock_auto", "stock_mix"}:
@@ -189,6 +198,7 @@ def _download_stock_for_scenes(
     credits: list[dict[str, Any]] = []
     used_ids: set[tuple[str, str]] = _historical_stock_ids()
     stock_paths: list[Path] = []
+    used_hashes = historical_hashes(list_projects())
 
     # In mixed mode, use each uploaded clip once first, then let stock fill the
     # remaining scenes. This avoids blindly cycling one user clip across the Short.
@@ -199,13 +209,15 @@ def _download_stock_for_scenes(
     stock_start_index = len(visual_paths) if visual_source == "stock_mix" else 0
 
     for scene in scenes:
-        if scene.index < stock_start_index and scene.clip_name:
+        if scene.clip_name or (scene.index < stock_start_index and scene.clip_name):
             continue
         if len(stock_paths) >= max_clips:
             break
 
-        query = build_search_query(scene.text, fallback=f"{title} {prompt}")
+        query = (scene_queries or {}).get(int(scene.index)) or build_search_query(
+            scene.text, fallback=f"{title} {prompt}")
         candidate: dict[str, Any] | None = None
+        choices: list[dict[str, Any]] = []
 
         selected = selections.get(int(scene.index))
         if selected:
@@ -225,6 +237,7 @@ def _download_stock_for_scenes(
                 )
                 if candidate_key(resolved) not in used_ids:
                     candidate = resolved
+                    choices.append(resolved)
 
         if candidate is None:
             candidates = search_stock(
@@ -241,23 +254,34 @@ def _download_stock_for_scenes(
                 candidates,
                 used_ids,
                 available,
-                limit=1,
+                limit=8,
                 preferred_provider=preferred_provider,
             )
-            candidate = balanced[0] if balanced else None
+            choices.extend(balanced)
 
-        if not candidate:
-            continue
-
-        key = candidate_key(candidate)
-        used_ids.add(key)
-        destination = upload_dir / (
-            f"stock_{scene.index:02d}_{candidate['provider']}_{candidate['id']}.mp4"
-        )
-        download_candidate(candidate, destination)
-        stock_paths.append(destination)
-        scene.clip_name = destination.name
-        credits.append(credit_record(candidate, scene_index=int(scene.index)))
+        for candidate in choices:
+            key = candidate_key(candidate)
+            if key in used_ids:
+                continue
+            destination = upload_dir / (
+                f"stock_{scene.index:02d}_{candidate['provider']}_{candidate['id']}.mp4"
+            )
+            download_candidate(candidate, destination)
+            fingerprint = visual_hash(destination)
+            if any(similar(fingerprint, known) for known in used_hashes):
+                destination.unlink(missing_ok=True)
+                used_ids.add(key)
+                continue
+            used_ids.add(key)
+            if fingerprint:
+                used_hashes.add(fingerprint)
+            stock_paths.append(destination)
+            scene.clip_name = destination.name
+            credit = credit_record(candidate, scene_index=int(scene.index))
+            credit["fingerprint"] = fingerprint
+            credit["reuse_review_required"] = True
+            credits.append(credit)
+            break
 
     all_paths = [*visual_paths, *stock_paths]
 
@@ -295,6 +319,7 @@ def _process_project(
     stock_selections: str,
     prefer_portrait: bool,
     video_mode: str,
+    scene_overrides: str = "",
 ) -> None:
     project_dir = DATA_DIR / project_id
     try:
@@ -323,7 +348,7 @@ def _process_project(
         profile_scene_limit = int(profile["max_scenes"])
         scene_limit = (
             min(stock_max_clips, profile_scene_limit)
-            if visual_source in {"stock_auto", "stock_mix"}
+            if visual_source in {"stock_auto", "stock_mix", "ai_auto", "authentic_auto", "hybrid_auto"}
             else profile_scene_limit
         )
         scenes = plan_aligned_scenes(total_duration, words, script, planning_clips, scene_limit)
@@ -346,6 +371,116 @@ def _process_project(
         save_state(project_dir, state)
 
         credits: list[dict[str, Any]] = []
+        if visual_source in {"ai_auto", "authentic_auto", "hybrid_auto"}:
+            director_mode = {"ai_auto": "ai", "authentic_auto": "authentic",
+                             "hybrid_auto": "hybrid"}[visual_source]
+            plans = make_plan(scenes, title, mode=director_mode)
+            overrides = _parse_scene_overrides(scene_overrides, len(scenes))
+            plans = [
+                replace(plan,
+                        visual_type=overrides.get(plan.scene_index, {}).get("visual_type", plan.visual_type),
+                        ai_prompt=overrides.get(plan.scene_index, {}).get("ai_prompt", plan.ai_prompt))
+                for plan in plans
+            ]
+            state["visual_plan"] = serialized(plans)
+            state["ai_tasks"] = []
+            state["ai_clip_count"] = 0
+            ai_plans = [p for p in plans if p.visual_type == "ai"][:budget.maximum]
+            state["estimated_ai_credits"] = sum(ai_video.estimated_credits(p.duration) for p in ai_plans)
+            state["estimated_ai_usd"] = round(state["estimated_ai_credits"] * 0.01, 2)
+            save_state(project_dir, state)
+            if director_mode in {"ai", "hybrid"}:
+                reference_images = iter([p for p in visual_paths if is_image(p)])
+                if max_generations and not ai_video.configured():
+                    raise ValueError("RUNWAYML_API_SECRET is missing; configure it in Render secrets")
+                for plan in plans:
+                    if plan.visual_type != "ai" or budget.used >= budget.maximum:
+                        continue
+                    state.update({"status": f"generating AI scene {plan.scene_index + 1}",
+                                  "progress": 32})
+                    save_state(project_dir, state)
+                    image = next(reference_images, None)
+                    start_frame = ai_video.image_data_uri(image) if image else None
+                    task_id = ai_video.create_task(
+                        plan.ai_prompt, portrait=prefer_portrait, image_uri=start_frame,
+                        duration=max(2, min(10, round(plan.duration))),
+                    )
+                    budget.used += 1
+                    record = {"scene_index": plan.scene_index, "task_id": task_id,
+                              "status": "PENDING", "synthetic": True,
+                              "label": plan.synthetic_label}
+                    state["ai_tasks"].append(record)
+                    state["generation_budget"] = {
+                        "maximum": budget.maximum, "used": budget.used,
+                        "remaining": budget.remaining, "enabled": True}
+                    save_state(project_dir, state)
+
+                    def update_task(task, item=record):
+                        item["status"] = task.get("status", "UNKNOWN")
+                        save_state(project_dir, state)
+
+                    try:
+                        url = ai_video.wait_task(task_id, on_update=update_task)
+                        destination = project_dir / "uploads" / f"ai_{plan.scene_index:02d}.mp4"
+                        ai_video.download_result(url, destination)
+                    except (ai_video.AIVideoError, OSError, ValueError) as exc:
+                        record["status"] = "FAILED"
+                        record["error"] = str(exc)
+                        save_state(project_dir, state)
+                        if director_mode == "ai":
+                            raise
+                        # Hybrid mode keeps this scene unassigned for licensed-media fallback.
+                        continue
+                    record["status"] = "SUCCEEDED"
+                    record["filename"] = destination.name
+                    scenes[plan.scene_index].clip_name = destination.name
+                    visual_paths.append(destination)
+                    state["ai_clip_count"] += 1
+                    save_state(project_dir, state)
+            if director_mode in {"authentic", "hybrid"}:
+                state.update({"status": "finding licensed footage", "progress": 36})
+                save_state(project_dir, state)
+                if any(stock_api_status().values()):
+                    visual_paths, credits = _download_stock_for_scenes(
+                        project_dir=project_dir, scenes=scenes, visual_paths=visual_paths,
+                        title=title, prompt=prompt, visual_source="stock_auto",
+                        providers=stock_providers, max_clips=stock_max_clips,
+                        selections_raw=stock_selections, prefer_portrait=prefer_portrait,
+                        scene_queries={p.scene_index: p.search_query for p in plans},
+                    )
+                # Commons is conservative: public-domain/CC0 stills only.
+                existing = _historical_stock_ids()
+                for scene in scenes:
+                    if scene.clip_name:
+                        continue
+                    try:
+                        choices = commons.search_images(
+                            plans[int(scene.index)].search_query, limit=10)
+                    except (OSError, ValueError, KeyError):
+                        continue
+                    for image in choices:
+                        key = (image["provider"], str(image["id"]))
+                        if key in existing:
+                            continue
+                        existing.add(key)
+                        mime = image.get("mime") or ""
+                        ext = ".png" if mime == "image/png" else (".webp" if mime == "image/webp" else ".jpg")
+                        destination = project_dir / "uploads" / f"commons_{scene.index:02d}{ext}"
+                        try:
+                            commons.download_image(image, destination)
+                        except (OSError, ValueError):
+                            continue
+                        visual_paths.append(destination)
+                        scene.clip_name = destination.name
+                        credits.append({
+                            "scene_index": int(scene.index), "provider": image["provider"],
+                            "video_id": str(image["id"]), "creator": image["creator"],
+                            "source_url": image["page_url"], "license": image["license"],
+                            "attribution": image["attribution"], "reuse_review_required": True,
+                        })
+                        break
+                if credits:
+                    write_credits(project_dir / "credits.txt", credits)
         if visual_source in {"stock_auto", "stock_mix"}:
             state.update({"status": "finding stock clips", "progress": 36})
             save_state(project_dir, state)
@@ -362,15 +497,19 @@ def _process_project(
                 prefer_portrait=prefer_portrait,
             )
 
+        is_documentary = visual_source in {"ai_auto", "authentic_auto", "hybrid_auto"}
         state.update({
-            "status": "rendering",
-            "progress": 48,
+            "status": "awaiting_review" if is_documentary else "rendering",
+            "progress": 65 if is_documentary else 48,
             "visual_count": len(visual_paths),
             "stock_clip_count": len(credits),
             "stock_credits": credits,
             "scenes": [scene.to_dict() for scene in scenes],
         })
         save_state(project_dir, state)
+        if is_documentary:
+            # Do not render the final MP4 before a human approves the actual footage.
+            return
 
         final_path = render_video(
             project_dir=project_dir,
@@ -396,7 +535,7 @@ def _process_project(
                 "maximum": budget.maximum,
                 "used": budget.used,
                 "remaining": budget.remaining,
-                "enabled": False,
+                "enabled": visual_source in {"ai_auto", "hybrid_auto"},
             },
         })
         save_state(project_dir, state)
@@ -432,6 +571,82 @@ def stock_status() -> dict[str, Any]:
         "providers": ["pexels", "pixabay"],
         "max_stock_clips": 36,
     }
+
+
+def _parse_scene_overrides(raw: str, scene_count: int) -> dict[int, dict[str, str]]:
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid storyboard options") from exc
+    if not isinstance(data, list) or len(data) > 36:
+        raise ValueError("Storyboard overrides must be a short list")
+    overrides: dict[int, dict[str, str]] = {}
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid storyboard override")
+        index = item.get("scene_index")
+        kind = item.get("visual_type")
+        if type(index) is not int or not 0 <= index < scene_count:
+            raise ValueError("Invalid storyboard scene index")
+        if kind not in {"ai", "authentic"}:
+            raise ValueError("Invalid storyboard visual type")
+        prompt = str(item.get("ai_prompt") or "").strip()
+        if len(prompt) > 1000:
+            raise ValueError("Storyboard prompt exceeds 1000 characters")
+        overrides[index] = {"visual_type": kind, **({"ai_prompt": prompt} if prompt else {})}
+    return overrides
+
+
+def _require_admin(token: str | None) -> None:
+    expected = os.getenv("NOVUM_ADMIN_TOKEN", "").strip()
+    if not expected or not hmac.compare_digest(expected, token or ""):
+        raise HTTPException(status_code=403, detail="A valid documentary administrator token is required")
+
+
+def _review_state(project_id: str) -> tuple[Path, dict[str, Any]]:
+    if len(project_id) != 12 or any(ch not in "0123456789abcdef" for ch in project_id):
+        raise HTTPException(status_code=404, detail="Invalid project id")
+    try:
+        state = load_state(project_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+    if state.get("visual_source") not in {"ai_auto", "authentic_auto", "hybrid_auto"}:
+        raise HTTPException(status_code=400, detail="This is not a documentary project")
+    return DATA_DIR / project_id, state
+
+
+@app.post("/api/ai/storyboard")
+def preview_storyboard(
+    title: str = Form(""), script: str = Form(""),
+    visual_source: str = Form("hybrid_auto"),
+    stock_max_clips: int = Form(8), video_mode: str = Form("short"),
+) -> dict[str, Any]:
+    modes = {"ai_auto": "ai", "authentic_auto": "authentic", "hybrid_auto": "hybrid"}
+    if visual_source not in modes:
+        raise HTTPException(status_code=400, detail="Choose a documentary mode")
+    if not script.strip():
+        raise HTTPException(status_code=400, detail="Enter a narration script")
+    if video_mode not in {"short", "long"}:
+        raise HTTPException(status_code=400, detail="Invalid video mode")
+    limit = min(max(stock_max_clips, 1), int(video_profile(video_mode)["max_scenes"]))
+    groups = visual_groups(script, limit)
+    scenes = [SimpleNamespace(index=i, start=i * 5.0, end=(i + 1) * 5.0,
+                              duration=5.0, text=text)
+              for i, text in enumerate(groups)]
+    return {
+        "visual_plan": serialized(make_plan(scenes, title, mode=modes[visual_source])),
+        "timings_are_estimates": True,
+        "notice": "Synthetic scenes are illustrations, not footage of actual events.",
+        "estimated_credits_per_five_second_ai_scene": ai_video.estimated_credits(5),
+        "estimated_usd_per_five_second_ai_scene": round(ai_video.estimated_credits(5) * 0.01, 2),
+    }
+
+
+@app.get("/api/ai/status")
+def ai_status() -> dict[str, Any]:
+    return {"runway_configured": ai_video.configured(), "modes": ["ai_auto", "authentic_auto", "hybrid_auto"], "model": "gen4.5"}
 
 
 @app.post("/api/stock/search")
@@ -522,16 +737,37 @@ def create_project(
     stock_providers: str = Form("pexels,pixabay"),
     stock_max_clips: int = Form(8),
     stock_selections: str = Form(""),
+    scene_overrides: str = Form(""),
+    storyboard_approved: bool = Form(False),
     prefer_portrait: bool = Form(True),
     video_mode: str = Form("short"),
+    x_novum_admin_token: str | None = Header(default=None),
     narration: UploadFile = File(...),
     clips: list[UploadFile] = File(default=[]),
     music: UploadFile | None = File(default=None),
 ) -> dict[str, object]:
-    if visual_source not in {"upload", "stock_auto", "stock_mix"}:
+    if visual_source not in {"upload", "stock_auto", "stock_mix", "ai_auto", "authentic_auto", "hybrid_auto"}:
         raise HTTPException(status_code=400, detail="Invalid visual source")
     if video_mode not in {"short", "long"}:
         raise HTTPException(status_code=400, detail="Invalid video mode")
+    max_generations = min(max(max_generations, 0), 20)
+    if visual_source in {"ai_auto", "authentic_auto", "hybrid_auto"}:
+        if not storyboard_approved:
+            raise HTTPException(status_code=400, detail="Review and approve the storyboard first")
+        try:
+            checked_overrides = _parse_scene_overrides(scene_overrides, min(stock_max_clips, int(video_profile(video_mode)["max_scenes"])))
+            if visual_source == "ai_auto" and any(v["visual_type"] != "ai" for v in checked_overrides.values()):
+                raise ValueError("AI-only mode cannot use authentic scenes")
+            if visual_source == "authentic_auto" and any(v["visual_type"] != "authentic" for v in checked_overrides.values()):
+                raise ValueError("Authentic-only mode cannot use AI scenes")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if visual_source in {"ai_auto", "authentic_auto", "hybrid_auto"}:
+        _require_admin(x_novum_admin_token)
+    if visual_source == "ai_auto" and max_generations <= 0:
+        raise HTTPException(status_code=400, detail="AI-only mode requires a positive AI generation budget")
+    if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0 and not ai_video.configured():
+        raise HTTPException(status_code=400, detail="RUNWAYML_API_SECRET is not configured")
     profile = video_profile(video_mode)
     max_mode_scenes = int(profile["max_scenes"])
     stock_max_clips = min(max(int(stock_max_clips or 1), 1), max_mode_scenes)
@@ -584,6 +820,11 @@ def create_project(
         "stock_max_clips": stock_max_clips,
         "stock_clip_count": 0,
         "stock_credits": [],
+        "ai_clip_count": 0,
+        "estimated_ai_credits": 0,
+        "estimated_ai_usd": 0,
+        "ai_tasks": [],
+        "visual_plan": [],
         "stock_provider_status": stock_api_status(),
         "narration_file": narration_path.name,
         "music_file": music_path.name if music_path else None,
@@ -617,6 +858,7 @@ def create_project(
         stock_selections,
         prefer_portrait,
         video_mode,
+        scene_overrides,
     )
     return {"project_id": project_id, "status": "queued"}
 
@@ -632,6 +874,205 @@ def project(project_id: str) -> dict[str, object]:
         return load_state(project_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Project not found") from None
+
+
+
+@app.get("/api/projects/{project_id}/scenes/{scene_index}/media")
+def review_scene_media(project_id: str, scene_index: int,
+                       x_novum_admin_token: str | None = Header(default=None)) -> FileResponse:
+    _require_admin(x_novum_admin_token)
+    project_dir, state = _review_state(project_id)
+    scenes = state.get("scenes") or []
+    if not 0 <= scene_index < len(scenes):
+        raise HTTPException(status_code=404, detail="Scene not found")
+    name = str(scenes[scene_index].get("clip_name") or "")
+    if not name or Path(name).name != name:
+        raise HTTPException(status_code=404, detail="Scene has no media")
+    path = project_dir / "uploads" / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Scene media is unavailable")
+    mime = "video/mp4" if path.suffix.lower() in ALLOWED_VIDEO else (
+        "image/png" if path.suffix.lower() == ".png" else
+        "image/webp" if path.suffix.lower() == ".webp" else "image/jpeg")
+    return FileResponse(path, media_type=mime)
+
+
+@app.post("/api/projects/{project_id}/scenes/{scene_index}/replace")
+def replace_review_scene(project_id: str, scene_index: int,
+                         replacement: UploadFile = File(...),
+                         x_novum_admin_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_admin(x_novum_admin_token)
+    project_dir, state = _review_state(project_id)
+    scenes = state.get("scenes") or []
+    if state.get("status") != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Project is not awaiting review")
+    if not 0 <= scene_index < len(scenes):
+        raise HTTPException(status_code=404, detail="Scene not found")
+    ext = Path(replacement.filename or "").suffix.lower()
+    if ext not in ALLOWED_IMAGE | ALLOWED_VIDEO:
+        raise HTTPException(status_code=400, detail="Unsupported replacement media")
+    path = project_dir / "uploads" / f"review_{scene_index:02d}{ext}"
+    count = 0
+    try:
+        with path.open("wb") as output:
+            while chunk := replacement.file.read(1024 * 1024):
+                count += len(chunk)
+                if count > 60 * 1024 * 1024:
+                    raise ValueError("Replacement exceeds 60 MB")
+                output.write(chunk)
+    except (OSError, ValueError) as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if count < 1024:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Replacement media is empty")
+    scenes[scene_index]["clip_name"] = path.name
+    state["stock_credits"] = [
+        credit for credit in state.get("stock_credits", [])
+        if int(credit.get("scene_index", -1)) != scene_index
+    ]
+    state["stock_clip_count"] = len(state["stock_credits"])
+    credits_path = project_dir / "credits.txt"
+    if state["stock_credits"]:
+        write_credits(credits_path, state["stock_credits"])
+    else:
+        credits_path.unlink(missing_ok=True)
+    state["visual_count"] = sum(bool(scene.get("clip_name")) for scene in scenes)
+    save_state(project_dir, state)
+    return {"status": "replaced", "scene_index": scene_index}
+
+
+def _finalize_review_project(project_id: str) -> None:
+    with _project_lock:
+        project_dir, state = _review_state(project_id)
+        try:
+            scenes = []
+            for item in state.get("scenes") or []:
+                data = dict(item)
+                data["words"] = [WordTiming(**w) for w in data.get("words", [])]
+                scenes.append(Scene(**data))
+            upload_dir = project_dir / "uploads"
+            visual_paths = [upload_dir / scene.clip_name for scene in scenes if scene.clip_name]
+            clean_narration = project_dir / "work" / "narration_clean.wav"
+            narration = clean_narration if clean_narration.exists() else upload_dir / state["narration_file"]
+            music = upload_dir / state["music_file"] if state.get("music_file") else None
+            state.update({"status": "rendering", "progress": 80})
+            save_state(project_dir, state)
+            final_path = render_video(
+                project_dir=project_dir, scenes=scenes, visual_paths=visual_paths,
+                narration_path=narration, total_duration=float(state["duration"]),
+                hook=state.get("hook") or "", ending_question=state.get("ending_question") or "",
+                music_path=music, narration_prepared=clean_narration.exists(),
+                video_mode=state["video_mode"],
+            )
+            state.update({
+                "status": "complete", "progress": 100, "completed_at": now_iso(),
+                "output_file": final_path.name,
+                "metadata": build_metadata(state["title"], state["prompt"], state["script"],
+                                           video_mode=state["video_mode"]),
+            })
+            save_state(project_dir, state)
+            cleanup_work(project_dir)
+        except Exception as exc:
+            state.update({"status": "awaiting_review", "progress": 65,
+                          "review_error": str(exc)})
+            save_state(project_dir, state)
+
+
+def _regenerate_review_scene(project_id: str, scene_index: int) -> None:
+    with _project_lock:
+        project_dir, state = _review_state(project_id)
+        budget = state.get("generation_budget") or {}
+        record: dict[str, Any] | None = None
+        try:
+            plan = (state.get("visual_plan") or [])[scene_index]
+            prompt = str(plan["ai_prompt"])
+            scenes = state["scenes"]
+            current_name = str(scenes[scene_index].get("clip_name") or "")
+            current_path = project_dir / "uploads" / current_name
+            image_uri = (ai_video.image_data_uri(current_path)
+                         if current_name and current_path.is_file() and is_image(current_path)
+                         else None)
+            task_id = ai_video.create_task(
+                prompt, portrait=state["video_mode"] == "short",
+                image_uri=image_uri,
+                duration=max(2, min(10, round(float(plan["duration"])))),
+            )
+            budget["used"] = int(budget.get("used", 0)) + 1
+            budget["remaining"] = max(int(budget.get("maximum", 0)) - budget["used"], 0)
+            record = {"scene_index": scene_index, "task_id": task_id,
+                      "status": "PENDING", "synthetic": True,
+                      "label": plan["synthetic_label"]}
+            state.setdefault("ai_tasks", []).append(record)
+            save_state(project_dir, state)
+
+            def update_task(task: dict[str, Any]) -> None:
+                record["status"] = task.get("status", "UNKNOWN")
+                save_state(project_dir, state)
+
+            url = ai_video.wait_task(task_id, on_update=update_task)
+            dest = project_dir / "uploads" / f"ai_review_{scene_index:02d}.mp4"
+            ai_video.download_result(url, dest)
+            scenes[scene_index]["clip_name"] = dest.name
+            record["status"] = "SUCCEEDED"
+            record["filename"] = dest.name
+            state["stock_credits"] = [credit for credit in state.get("stock_credits", [])
+                                      if credit.get("scene_index") != scene_index]
+            state["stock_clip_count"] = len(state["stock_credits"])
+            credits_path = project_dir / "credits.txt"
+            if state["stock_credits"]:
+                write_credits(credits_path, state["stock_credits"])
+            else:
+                credits_path.unlink(missing_ok=True)
+            state["ai_clip_count"] = sum(
+                str(scene.get("clip_name") or "").startswith("ai_") for scene in scenes)
+            state["visual_count"] = sum(bool(scene.get("clip_name")) for scene in scenes)
+            state["review_error"] = None
+        except Exception as exc:
+            if record is not None:
+                record["status"] = "FAILED"
+                record["error"] = str(exc)
+            state["review_error"] = str(exc)
+        finally:
+            state["status"] = "awaiting_review"
+            state["progress"] = 65
+            save_state(project_dir, state)
+
+
+@app.post("/api/projects/{project_id}/scenes/{scene_index}/regenerate")
+def regenerate_review_scene(project_id: str, scene_index: int,
+                            background_tasks: BackgroundTasks,
+                            x_novum_admin_token: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_admin(x_novum_admin_token)
+    project_dir, state = _review_state(project_id)
+    if state.get("status") != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Project is not awaiting review")
+    if state["visual_source"] == "authentic_auto":
+        raise HTTPException(status_code=400, detail="Authentic-only mode prohibits AI footage")
+    if not 0 <= scene_index < len(state.get("scenes") or []):
+        raise HTTPException(status_code=404, detail="Scene not found")
+    budget = state.get("generation_budget") or {}
+    if int(budget.get("used") or 0) >= int(budget.get("maximum") or 0):
+        raise HTTPException(status_code=409, detail="AI generation budget is exhausted")
+    if not ai_video.configured():
+        raise HTTPException(status_code=400, detail="Runway key is not configured")
+    state.update({"status": f"regenerating scene {scene_index + 1}", "progress": 65})
+    save_state(project_dir, state)
+    background_tasks.add_task(_regenerate_review_scene, project_id, scene_index)
+    return {"status": "regenerating", "scene_index": scene_index}
+
+
+@app.post("/api/projects/{project_id}/approve")
+def approve_review_project(project_id: str, background_tasks: BackgroundTasks,
+                           x_novum_admin_token: str | None = Header(default=None)) -> dict[str, str]:
+    _require_admin(x_novum_admin_token)
+    project_dir, state = _review_state(project_id)
+    if state.get("status") != "awaiting_review":
+        raise HTTPException(status_code=409, detail="Project is not awaiting review")
+    state.update({"status": "rendering", "progress": 75, "review_error": None})
+    save_state(project_dir, state)
+    background_tasks.add_task(_finalize_review_project, project_id)
+    return {"status": "rendering", "project_id": project_id}
 
 
 @app.get("/api/projects/{project_id}/video")
