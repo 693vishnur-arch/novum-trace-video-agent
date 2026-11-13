@@ -382,6 +382,9 @@ def _process_project(
             state["visual_plan"] = serialized(plans)
             state["ai_tasks"] = []
             state["ai_clip_count"] = 0
+            ai_plans = [p for p in plans if p.visual_type == "ai"][:budget.maximum]
+            state["estimated_ai_credits"] = sum(ai_video.estimated_credits(p.duration) for p in ai_plans)
+            state["estimated_ai_usd"] = round(state["estimated_ai_credits"] * 0.01, 2)
             save_state(project_dir, state)
             if director_mode in {"ai", "hybrid"}:
                 if max_generations and not ai_video.configured():
@@ -598,6 +601,8 @@ def preview_storyboard(
         "visual_plan": serialized(make_plan(scenes, title, mode=modes[visual_source])),
         "timings_are_estimates": True,
         "notice": "Synthetic scenes are illustrations, not footage of actual events.",
+        "estimated_credits_per_five_second_ai_scene": ai_video.estimated_credits(5),
+        "estimated_usd_per_five_second_ai_scene": round(ai_video.estimated_credits(5) * 0.01, 2),
     }
 
 
@@ -776,6 +781,8 @@ def create_project(
         "stock_clip_count": 0,
         "stock_credits": [],
         "ai_clip_count": 0,
+        "estimated_ai_credits": 0,
+        "estimated_ai_usd": 0,
         "ai_tasks": [],
         "visual_plan": [],
         "stock_provider_status": stock_api_status(),
