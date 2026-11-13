@@ -367,6 +367,7 @@ async function renderMediaReview(state) {
         const p = await r.json();
         if (!r.ok) throw new Error(p.detail || 'Regeneration failed');
         $('mediaReview').classList.add('hidden');
+        reviewSignature = '';
         startPolling(state.project_id);
       } catch (e) {
         $('reviewError').textContent = e.message;
