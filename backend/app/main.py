@@ -33,6 +33,8 @@ from backend.app.services.stock import (
     search_stock,
     write_credits,
 )
+from backend.app.services.scene_director import make_plan, serialized
+from backend.app.services import ai_video
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
 app = FastAPI(title="Novum Trace Video Agent", version="1.5.8")
@@ -199,7 +201,7 @@ def _download_stock_for_scenes(
     stock_start_index = len(visual_paths) if visual_source == "stock_mix" else 0
 
     for scene in scenes:
-        if scene.index < stock_start_index and scene.clip_name:
+        if scene.clip_name or (scene.index < stock_start_index and scene.clip_name):
             continue
         if len(stock_paths) >= max_clips:
             break
@@ -323,7 +325,7 @@ def _process_project(
         profile_scene_limit = int(profile["max_scenes"])
         scene_limit = (
             min(stock_max_clips, profile_scene_limit)
-            if visual_source in {"stock_auto", "stock_mix"}
+            if visual_source in {"stock_auto", "stock_mix", "ai_auto", "authentic_auto", "hybrid_auto"}
             else profile_scene_limit
         )
         scenes = plan_aligned_scenes(total_duration, words, script, planning_clips, scene_limit)
@@ -346,6 +348,59 @@ def _process_project(
         save_state(project_dir, state)
 
         credits: list[dict[str, Any]] = []
+        if visual_source in {"ai_auto", "authentic_auto", "hybrid_auto"}:
+            director_mode = {"ai_auto": "ai", "authentic_auto": "authentic",
+                             "hybrid_auto": "hybrid"}[visual_source]
+            plans = make_plan(scenes, title, mode=director_mode)
+            state["visual_plan"] = serialized(plans)
+            state["ai_tasks"] = []
+            state["ai_clip_count"] = 0
+            save_state(project_dir, state)
+            if director_mode in {"ai", "hybrid"}:
+                if max_generations and not ai_video.configured():
+                    raise ValueError("RUNWAYML_API_SECRET is missing; configure it in Render secrets")
+                for plan in plans:
+                    if plan.visual_type != "ai" or budget.used >= budget.maximum:
+                        continue
+                    state.update({"status": f"generating AI scene {plan.scene_index + 1}",
+                                  "progress": 32})
+                    save_state(project_dir, state)
+                    task_id = ai_video.create_task(
+                        plan.ai_prompt, portrait=prefer_portrait,
+                        duration=max(2, min(10, round(plan.duration))),
+                    )
+                    budget.used += 1
+                    record = {"scene_index": plan.scene_index, "task_id": task_id,
+                              "status": "PENDING", "synthetic": True,
+                              "label": plan.synthetic_label}
+                    state["ai_tasks"].append(record)
+                    state["generation_budget"] = {
+                        "maximum": budget.maximum, "used": budget.used,
+                        "remaining": budget.remaining, "enabled": True}
+                    save_state(project_dir, state)
+
+                    def update_task(task, item=record):
+                        item["status"] = task.get("status", "UNKNOWN")
+                        save_state(project_dir, state)
+
+                    url = ai_video.wait_task(task_id, on_update=update_task)
+                    destination = project_dir / "uploads" / f"ai_{plan.scene_index:02d}.mp4"
+                    ai_video.download_result(url, destination)
+                    record["status"] = "SUCCEEDED"
+                    record["filename"] = destination.name
+                    scenes[plan.scene_index].clip_name = destination.name
+                    visual_paths.append(destination)
+                    state["ai_clip_count"] += 1
+                    save_state(project_dir, state)
+            if director_mode in {"authentic", "hybrid"}:
+                state.update({"status": "finding licensed footage", "progress": 36})
+                save_state(project_dir, state)
+                visual_paths, credits = _download_stock_for_scenes(
+                    project_dir=project_dir, scenes=scenes, visual_paths=visual_paths,
+                    title=title, prompt=prompt, visual_source="stock_auto",
+                    providers=stock_providers, max_clips=stock_max_clips,
+                    selections_raw=stock_selections, prefer_portrait=prefer_portrait,
+                )
         if visual_source in {"stock_auto", "stock_mix"}:
             state.update({"status": "finding stock clips", "progress": 36})
             save_state(project_dir, state)
@@ -396,7 +451,7 @@ def _process_project(
                 "maximum": budget.maximum,
                 "used": budget.used,
                 "remaining": budget.remaining,
-                "enabled": False,
+                "enabled": visual_source in {"ai_auto", "hybrid_auto"},
             },
         })
         save_state(project_dir, state)
@@ -432,6 +487,11 @@ def stock_status() -> dict[str, Any]:
         "providers": ["pexels", "pixabay"],
         "max_stock_clips": 36,
     }
+
+
+@app.get("/api/ai/status")
+def ai_status() -> dict[str, Any]:
+    return {"runway_configured": ai_video.configured(), "modes": ["ai_auto", "authentic_auto", "hybrid_auto"], "model": "gen4.5"}
 
 
 @app.post("/api/stock/search")
@@ -528,10 +588,14 @@ def create_project(
     clips: list[UploadFile] = File(default=[]),
     music: UploadFile | None = File(default=None),
 ) -> dict[str, object]:
-    if visual_source not in {"upload", "stock_auto", "stock_mix"}:
+    if visual_source not in {"upload", "stock_auto", "stock_mix", "ai_auto", "authentic_auto", "hybrid_auto"}:
         raise HTTPException(status_code=400, detail="Invalid visual source")
     if video_mode not in {"short", "long"}:
         raise HTTPException(status_code=400, detail="Invalid video mode")
+    if visual_source == "ai_auto" and max_generations <= 0:
+        raise HTTPException(status_code=400, detail="AI-only mode requires a positive AI generation budget")
+    if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0 and not ai_video.configured():
+        raise HTTPException(status_code=400, detail="RUNWAYML_API_SECRET is not configured")
     profile = video_profile(video_mode)
     max_mode_scenes = int(profile["max_scenes"])
     stock_max_clips = min(max(int(stock_max_clips or 1), 1), max_mode_scenes)
@@ -584,6 +648,9 @@ def create_project(
         "stock_max_clips": stock_max_clips,
         "stock_clip_count": 0,
         "stock_credits": [],
+        "ai_clip_count": 0,
+        "ai_tasks": [],
+        "visual_plan": [],
         "stock_provider_status": stock_api_status(),
         "narration_file": narration_path.name,
         "music_file": music_path.name if music_path else None,
