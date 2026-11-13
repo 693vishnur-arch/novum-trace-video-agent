@@ -406,7 +406,12 @@ form.addEventListener('submit', async function (event) {
     } else {
       data.set('stock_selections', '');
     }
-    const r = await fetch('/api/projects', {method:'POST', body:data});
+    const token = $('aiAdminToken').value.trim();
+    const paidAI = ['ai_auto', 'hybrid_auto'].includes(visualSource.value) &&
+      Number($('max_generations').value) > 0;
+    if (paidAI && !token) throw new Error('Administrator token required for paid AI generation.');
+    const headers = paidAI ? {'X-Novum-Admin-Token': token} : {};
+    const r = await fetch('/api/projects', {method:'POST', body:data, headers});
     const p = await r.json();
     if (!r.ok) throw new Error(p.detail || 'Could not create project');
     setActive();
