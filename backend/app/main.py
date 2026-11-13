@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import hmac
 import shutil
 import traceback
 import threading
@@ -9,7 +11,7 @@ from types import SimpleNamespace
 from dataclasses import replace
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -696,6 +698,7 @@ def create_project(
     storyboard_approved: bool = Form(False),
     prefer_portrait: bool = Form(True),
     video_mode: str = Form("short"),
+    x_novum_admin_token: str | None = Header(default=None),
     narration: UploadFile = File(...),
     clips: list[UploadFile] = File(default=[]),
     music: UploadFile | None = File(default=None),
@@ -712,6 +715,10 @@ def create_project(
             _parse_scene_overrides(scene_overrides, min(stock_max_clips, int(video_profile(video_mode)["max_scenes"])))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0:
+        expected_token = os.getenv("NOVUM_ADMIN_TOKEN", "").strip()
+        if not expected_token or not hmac.compare_digest(expected_token, x_novum_admin_token or ""):
+            raise HTTPException(status_code=403, detail="A valid AI-generation administrator token is required")
     if visual_source == "ai_auto" and max_generations <= 0:
         raise HTTPException(status_code=400, detail="AI-only mode requires a positive AI generation budget")
     if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0 and not ai_video.configured():
