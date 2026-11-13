@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.app.config import ALLOWED_AUDIO, ALLOWED_IMAGE, ALLOWED_VIDEO, DATA_DIR, STATIC_DIR, video_profile
 from backend.app.services.budget import GenerationBudget
-from backend.app.services.media import probe_duration
+from backend.app.services.media import probe_duration, is_image
 from backend.app.services.metadata import build_metadata
 from backend.app.services.planner import derive_ending, derive_hook, plan_aligned_scenes, visual_groups
 from backend.app.services.renderer import cleanup_work, render_video, _prepare_narration
@@ -387,6 +387,7 @@ def _process_project(
             state["estimated_ai_usd"] = round(state["estimated_ai_credits"] * 0.01, 2)
             save_state(project_dir, state)
             if director_mode in {"ai", "hybrid"}:
+                reference_images = iter([p for p in visual_paths if is_image(p)])
                 if max_generations and not ai_video.configured():
                     raise ValueError("RUNWAYML_API_SECRET is missing; configure it in Render secrets")
                 for plan in plans:
@@ -395,8 +396,10 @@ def _process_project(
                     state.update({"status": f"generating AI scene {plan.scene_index + 1}",
                                   "progress": 32})
                     save_state(project_dir, state)
+                    image = next(reference_images, None)
+                    start_frame = ai_video.image_data_uri(image) if image else None
                     task_id = ai_video.create_task(
-                        plan.ai_prompt, portrait=prefer_portrait,
+                        plan.ai_prompt, portrait=prefer_portrait, image_uri=start_frame,
                         duration=max(2, min(10, round(plan.duration))),
                     )
                     budget.used += 1
