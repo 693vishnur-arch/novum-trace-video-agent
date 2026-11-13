@@ -25,6 +25,8 @@ const storyboardScenes = $('storyboardScenes');
 const storyboardApproved = $('storyboard_approved');
 const sceneOverrides = $('scene_overrides');
 let storyboardSignature = '';
+let reviewSignature = '';
+let reviewObjectURLs = [];
 let pollTimer = null;
 let pollGeneration = 0;
 
@@ -311,10 +313,100 @@ function renderCredits(state) {
   creditsLink.classList.remove('hidden');
 }
 
+async function renderMediaReview(state) {
+  const panel = $('mediaReview');
+  if (state.status !== 'awaiting_review') {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  const scenes = state.scenes || [];
+  const signature = state.project_id + JSON.stringify(scenes.map(s => s.clip_name));
+  if (reviewSignature === signature) return;
+  reviewSignature = signature;
+  reviewObjectURLs.forEach(url => URL.revokeObjectURL(url));
+  reviewObjectURLs = [];
+  $('reviewScenes').innerHTML = scenes.map((scene, index) => {
+    return '<div class="candidate-scene" data-review-index="' + index + '">' +
+      '<strong>Scene ' + (index + 1) + '</strong><p>' + esc(scene.text) + '</p>' +
+      '<div class="review-media"><small>Loading preview...</small></div>' +
+      '<label>Replace clip or still image<input type="file" accept="video/*,image/*" class="review-file"></label>' +
+      '<button type="button" class="secondary review-replace">Replace this scene</button>' +
+      '</div>';
+  }).join('');
+  const token = $('aiAdminToken').value.trim();
+  $('reviewScenes').querySelectorAll('[data-review-index]').forEach(async (card) => {
+    const index = Number(card.dataset.reviewIndex);
+    const scene = scenes[index];
+    const mediaArea = card.querySelector('.review-media');
+    if (!scene.clip_name) {
+      mediaArea.textContent = 'No matching visual. Upload a replacement before rendering.';
+    } else {
+      try {
+        const r = await fetch('/api/projects/' + state.project_id +
+          '/scenes/' + index + '/media', {headers: {'X-Novum-Admin-Token': token}});
+        if (!r.ok) throw new Error('Preview unavailable');
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        reviewObjectURLs.push(url);
+        mediaArea.innerHTML = blob.type.startsWith('video/')
+          ? '<video controls playsinline style="max-height:260px;max-width:100%" src="' + url + '"></video>'
+          : '<img alt="Scene preview" style="max-height:260px;max-width:100%" src="' + url + '">';
+      } catch (e) { mediaArea.textContent = e.message; }
+    }
+    card.querySelector('.review-replace').addEventListener('click', async () => {
+      const file = card.querySelector('.review-file').files[0];
+      if (!file) { $('reviewError').textContent = 'Choose a replacement file first.';
+        $('reviewError').classList.remove('hidden'); return; }
+      if (file.size > 60 * 1024 * 1024) {
+        $('reviewError').textContent = 'Replacement must be below 60 MB.';
+        $('reviewError').classList.remove('hidden'); return;
+      }
+      const body = new FormData();
+      body.set('replacement', file);
+      try {
+        const r = await fetch('/api/projects/' + state.project_id +
+          '/scenes/' + index + '/replace', {method:'POST', body,
+          headers:{'X-Novum-Admin-Token':$('aiAdminToken').value.trim()}});
+        const p = await r.json();
+        if (!r.ok) throw new Error(p.detail || 'Replace failed');
+        reviewSignature = '';
+        const latest = await fetch('/api/projects/' + state.project_id).then(r=>r.json());
+        applyState(latest);
+      } catch (e) {
+        $('reviewError').textContent = e.message;
+        $('reviewError').classList.remove('hidden');
+      }
+    });
+  });
+}
+
+$('approveVideo').addEventListener('click', async () => {
+  $('reviewError').classList.add('hidden');
+  const projectId = $('approveVideo').dataset.projectId;
+  if (!projectId) return;
+  $('approveVideo').disabled = true;
+  try {
+    const r = await fetch('/api/projects/' + projectId + '/approve', {method:'POST',
+      headers: {'X-Novum-Admin-Token': $('aiAdminToken').value.trim()}});
+    const p = await r.json();
+    if (!r.ok) throw new Error(p.detail || 'Could not approve video');
+    $('mediaReview').classList.add('hidden');
+    startPolling(projectId);
+  } catch (e) {
+    $('reviewError').textContent = e.message;
+    $('reviewError').classList.remove('hidden');
+  } finally {
+    $('approveVideo').disabled = false;
+  }
+});
+
 function applyState(state) {
   setActive();
   renderError.classList.add('hidden');
   $('statusLabel').textContent = state.status || 'unknown';
+  $('approveVideo').dataset.projectId = state.project_id || '';
+  renderMediaReview(state);
   $('progressValue').textContent = String(state.progress || 0) + '%';
   $('progressBar').style.width = String(state.progress || 0) + '%';
   $('statusSubtitle').textContent = state.title || state.project_id;
@@ -413,10 +505,9 @@ form.addEventListener('submit', async function (event) {
       data.set('stock_selections', '');
     }
     const token = $('aiAdminToken').value.trim();
-    const paidAI = ['ai_auto', 'hybrid_auto'].includes(visualSource.value) &&
-      Number($('max_generations').value) > 0;
-    if (paidAI && !token) throw new Error('Administrator token required for paid AI generation.');
-    const headers = paidAI ? {'X-Novum-Admin-Token': token} : {};
+    const isDocumentary = isDocumentaryMode();
+    if (isDocumentary && !token) throw new Error('Administrator token required for documentary projects.');
+    const headers = isDocumentary ? {'X-Novum-Admin-Token': token} : {};
     const r = await fetch('/api/projects', {method:'POST', body:data, headers});
     const p = await r.json();
     if (!r.ok) throw new Error(p.detail || 'Could not create project');
