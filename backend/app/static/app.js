@@ -20,6 +20,11 @@ const stockSelections = $('stock_selections');
 const stockCandidates = $('stockCandidates');
 const stockSearchError = $('stockSearchError');
 const findStockButton = $('findStockButton');
+const storyboardSection = $('storyboardSection');
+const storyboardScenes = $('storyboardScenes');
+const storyboardApproved = $('storyboard_approved');
+const sceneOverrides = $('scene_overrides');
+let storyboardSignature = '';
 let pollTimer = null;
 let pollGeneration = 0;
 
@@ -81,6 +86,76 @@ function updateVideoMode() {
   stockCandidates.classList.add('hidden');
 }
 
+function isDocumentaryMode() {
+  return ['ai_auto', 'authentic_auto', 'hybrid_auto'].includes(visualSource.value);
+}
+function resetStoryboard() {
+  storyboardApproved.checked = false;
+  storyboardSignature = '';
+  sceneOverrides.value = '[]';
+  storyboardScenes.innerHTML = '';
+}
+function storyboardInputSignature() {
+  return JSON.stringify([$('title').value, $('script').value, visualSource.value,
+    videoMode.value, stockMaxClips.value]);
+}
+function syncStoryboardOverrides() {
+  const items = [];
+  storyboardScenes.querySelectorAll('[data-scene-index]').forEach(function (el) {
+    const i = Number(el.dataset.sceneIndex);
+    const type = el.querySelector('select');
+    const prompt = el.querySelector('textarea');
+    if (type && prompt) items.push({scene_index:i, visual_type:type.value,
+      ai_prompt:prompt.value.trim()});
+  });
+  sceneOverrides.value = JSON.stringify(items);
+}
+function updateStoryboardControl() {
+  storyboardSection.classList.toggle('hidden', !isDocumentaryMode());
+  resetStoryboard();
+}
+async function previewStoryboard() {
+  const error = $('storyboardError');
+  error.classList.add('hidden');
+  const data = new FormData();
+  data.set('title', $('title').value.trim());
+  data.set('script', $('script').value.trim());
+  data.set('visual_source', visualSource.value);
+  data.set('stock_max_clips', stockMaxClips.value);
+  data.set('video_mode', videoMode.value);
+  try {
+    const r = await fetch('/api/ai/storyboard', {method:'POST', body:data});
+    const p = await r.json();
+    if (!r.ok) throw new Error(p.detail || 'Storyboard preview failed');
+    storyboardScenes.innerHTML = (p.visual_plan || []).map(function(plan) {
+      return '<div class="candidate-scene" data-scene-index="' + plan.scene_index + '">' +
+        '<strong>Scene ' + (plan.scene_index + 1) + '</strong><p>' + esc(plan.narration) + '</p>' +
+        '<small>' + esc(plan.source_requirement) + '</small>' +
+        '<label>Visual type<select><option value="authentic"' +
+        (plan.visual_type === 'authentic' ? ' selected' : '') + '>Authentic licensed media</option>' +
+        '<option value="ai"' + (plan.visual_type === 'ai' ? ' selected' : '') +
+        '>AI-generated illustration</option></select></label>' +
+        '<label>AI visual prompt<textarea rows="3" maxlength="1000">' +
+        esc(plan.ai_prompt) + '</textarea></label></div>';
+    }).join('');
+    storyboardSignature = storyboardInputSignature();
+    storyboardApproved.checked = false;
+    syncStoryboardOverrides();
+  } catch (e) {
+    error.textContent = e.message;
+    error.classList.remove('hidden');
+  }
+}
+$('previewStoryboard').addEventListener('click', previewStoryboard);
+storyboardScenes.addEventListener('input', function () {
+  storyboardApproved.checked = false;
+  syncStoryboardOverrides();
+});
+storyboardScenes.addEventListener('change', function () {
+  storyboardApproved.checked = false;
+  syncStoryboardOverrides();
+});
+
 function updateStockControls() {
   const enabled = !['upload', 'ai_auto'].includes(visualSource.value);
   findStockButton.disabled = !enabled;
@@ -98,8 +173,15 @@ function updateStockControls() {
 videoMode.addEventListener('change', function () {
   updateVideoMode();
   updateStockControls();
+  updateStoryboardControl();
 });
-visualSource.addEventListener('change', updateStockControls);
+visualSource.addEventListener('change', function () {
+  updateStockControls();
+  updateStoryboardControl();
+});
+stockMaxClips.addEventListener('change', resetStoryboard);
+$('title').addEventListener('input', resetStoryboard);
+$('script').addEventListener('input', resetStoryboard);
 selectionMode.addEventListener('change', updateStockControls);
 
 async function loadStockStatus() {
@@ -312,6 +394,10 @@ form.addEventListener('submit', async function (event) {
   createButton.disabled = true;
   createButton.textContent = 'Uploading...';
   try {
+    if (isDocumentaryMode() &&
+      (!storyboardApproved.checked || storyboardSignature !== storyboardInputSignature())) {
+      throw new Error('Preview and approve the current documentary storyboard before creating a video.');
+    }
     const data = new FormData(form);
     data.set('prefer_portrait', preferPortrait.checked ? 'true' : 'false');
     if (selectionMode.value === 'review') {
@@ -388,6 +474,7 @@ async function loadAIStatus() {
 
 updateVideoMode();
 updateStockControls();
+updateStoryboardControl();
 loadStockStatus();
 loadAIStatus();
 loadHistory();
