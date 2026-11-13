@@ -37,6 +37,7 @@ from backend.app.services.stock import (
 )
 from backend.app.services.scene_director import make_plan, serialized
 from backend.app.services import ai_video, commons
+from backend.app.services.fingerprints import visual_hash, similar, historical_hashes
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
 app = FastAPI(title="Novum Trace Video Agent", version="1.5.8")
@@ -193,6 +194,7 @@ def _download_stock_for_scenes(
     credits: list[dict[str, Any]] = []
     used_ids: set[tuple[str, str]] = _historical_stock_ids()
     stock_paths: list[Path] = []
+    used_hashes = historical_hashes(list_projects())
 
     # In mixed mode, use each uploaded clip once first, then let stock fill the
     # remaining scenes. This avoids blindly cycling one user clip across the Short.
@@ -210,6 +212,7 @@ def _download_stock_for_scenes(
 
         query = build_search_query(scene.text, fallback=f"{title} {prompt}")
         candidate: dict[str, Any] | None = None
+        choices: list[dict[str, Any]] = []
 
         selected = selections.get(int(scene.index))
         if selected:
@@ -229,6 +232,7 @@ def _download_stock_for_scenes(
                 )
                 if candidate_key(resolved) not in used_ids:
                     candidate = resolved
+                    choices.append(resolved)
 
         if candidate is None:
             candidates = search_stock(
@@ -245,23 +249,34 @@ def _download_stock_for_scenes(
                 candidates,
                 used_ids,
                 available,
-                limit=1,
+                limit=8,
                 preferred_provider=preferred_provider,
             )
-            candidate = balanced[0] if balanced else None
+            choices.extend(balanced)
 
-        if not candidate:
-            continue
-
-        key = candidate_key(candidate)
-        used_ids.add(key)
-        destination = upload_dir / (
-            f"stock_{scene.index:02d}_{candidate['provider']}_{candidate['id']}.mp4"
-        )
-        download_candidate(candidate, destination)
-        stock_paths.append(destination)
-        scene.clip_name = destination.name
-        credits.append(credit_record(candidate, scene_index=int(scene.index)))
+        for candidate in choices:
+            key = candidate_key(candidate)
+            if key in used_ids:
+                continue
+            destination = upload_dir / (
+                f"stock_{scene.index:02d}_{candidate['provider']}_{candidate['id']}.mp4"
+            )
+            download_candidate(candidate, destination)
+            fingerprint = visual_hash(destination)
+            if any(similar(fingerprint, known) for known in used_hashes):
+                destination.unlink(missing_ok=True)
+                used_ids.add(key)
+                continue
+            used_ids.add(key)
+            if fingerprint:
+                used_hashes.add(fingerprint)
+            stock_paths.append(destination)
+            scene.clip_name = destination.name
+            credit = credit_record(candidate, scene_index=int(scene.index))
+            credit["fingerprint"] = fingerprint
+            credit["reuse_review_required"] = True
+            credits.append(credit)
+            break
 
     all_paths = [*visual_paths, *stock_paths]
 
