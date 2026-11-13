@@ -5,6 +5,7 @@ Uses only the official Runway Dev API; never exposes an API key to the browser.
 from __future__ import annotations
 
 import json
+import base64
 import os
 import time
 import urllib.error
@@ -15,6 +16,7 @@ from pathlib import Path
 BASE = "https://api.dev.runwayml.com/v1"
 VERSION = "2024-11-06"
 MAX_VIDEO_BYTES = 60 * 1024 * 1024
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
 GEN45_CREDITS_PER_SECOND = 12
 
 
@@ -26,6 +28,16 @@ def estimated_credits(duration: float) -> int:
 
 class AIVideoError(RuntimeError):
     pass
+
+
+def image_data_uri(path: Path) -> str:
+    mime = {".png": "image/png", ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(path.suffix.lower())
+    if not mime:
+        raise AIVideoError("Unsupported reference image format")
+    if path.stat().st_size > MAX_IMAGE_BYTES:
+        raise AIVideoError("Reference image must be under 4 MB")
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
 def configured() -> bool:
@@ -58,8 +70,8 @@ def create_task(prompt: str, *, portrait: bool, image_uri: str | None = None,
         raise AIVideoError("Only the verified gen4.5 model is supported")
     duration = max(2, min(int(duration), 10))
     # Remote image inputs must be an explicitly provided trusted HTTPS URL.
-    if image_uri and not image_uri.startswith("https://"):
-        raise AIVideoError("Image input must be an HTTPS URL")
+    if image_uri and not (image_uri.startswith("https://") or image_uri.startswith(("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,"))):
+        raise AIVideoError("Image input must be a HTTPS URL or supported image data URI")
     payload = {
         "model": model,
         "promptText": prompt[:1000],
