@@ -15,3 +15,7 @@ services:
         sync: false
       - key: PIXABAY_API_KEY
         sync: false
+      - key: RUNWAYML_API_SECRET
+        sync: false
+      - key: NOVUM_ADMIN_TOKEN
+        sync: false
