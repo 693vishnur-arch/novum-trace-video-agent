@@ -34,7 +34,7 @@ from backend.app.services.stock import (
     write_credits,
 )
 from backend.app.services.scene_director import make_plan, serialized
-from backend.app.services import ai_video
+from backend.app.services import ai_video, commons
 from backend.app.services.store import create_project_dir, list_projects, load_state, now_iso, save_state
 
 app = FastAPI(title="Novum Trace Video Agent", version="1.5.8")
@@ -395,12 +395,46 @@ def _process_project(
             if director_mode in {"authentic", "hybrid"}:
                 state.update({"status": "finding licensed footage", "progress": 36})
                 save_state(project_dir, state)
-                visual_paths, credits = _download_stock_for_scenes(
-                    project_dir=project_dir, scenes=scenes, visual_paths=visual_paths,
-                    title=title, prompt=prompt, visual_source="stock_auto",
-                    providers=stock_providers, max_clips=stock_max_clips,
-                    selections_raw=stock_selections, prefer_portrait=prefer_portrait,
-                )
+                if any(stock_api_status().values()):
+                    visual_paths, credits = _download_stock_for_scenes(
+                        project_dir=project_dir, scenes=scenes, visual_paths=visual_paths,
+                        title=title, prompt=prompt, visual_source="stock_auto",
+                        providers=stock_providers, max_clips=stock_max_clips,
+                        selections_raw=stock_selections, prefer_portrait=prefer_portrait,
+                    )
+                # Commons is conservative: public-domain/CC0 stills only.
+                existing = _historical_stock_ids()
+                for scene in scenes:
+                    if scene.clip_name:
+                        continue
+                    try:
+                        choices = commons.search_images(
+                            build_search_query(scene.text, fallback=title), limit=10)
+                    except (OSError, ValueError, KeyError):
+                        continue
+                    for image in choices:
+                        key = (image["provider"], str(image["id"]))
+                        if key in existing:
+                            continue
+                        existing.add(key)
+                        mime = image.get("mime") or ""
+                        ext = ".png" if mime == "image/png" else (".webp" if mime == "image/webp" else ".jpg")
+                        destination = project_dir / "uploads" / f"commons_{scene.index:02d}{ext}"
+                        try:
+                            commons.download_image(image, destination)
+                        except (OSError, ValueError):
+                            continue
+                        visual_paths.append(destination)
+                        scene.clip_name = destination.name
+                        credits.append({
+                            "scene_index": int(scene.index), "provider": image["provider"],
+                            "video_id": str(image["id"]), "creator": image["creator"],
+                            "source_url": image["page_url"], "license": image["license"],
+                            "attribution": image["attribution"], "reuse_review_required": True,
+                        })
+                        break
+                if credits:
+                    write_credits(project_dir / "credits.txt", credits)
         if visual_source in {"stock_auto", "stock_mix"}:
             state.update({"status": "finding stock clips", "progress": 36})
             save_state(project_dir, state)
