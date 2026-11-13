@@ -5,6 +5,8 @@ import shutil
 import traceback
 import threading
 from pathlib import Path
+from types import SimpleNamespace
+from dataclasses import replace
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
@@ -15,7 +17,7 @@ from backend.app.config import ALLOWED_AUDIO, ALLOWED_IMAGE, ALLOWED_VIDEO, DATA
 from backend.app.services.budget import GenerationBudget
 from backend.app.services.media import probe_duration
 from backend.app.services.metadata import build_metadata
-from backend.app.services.planner import derive_ending, derive_hook, plan_aligned_scenes
+from backend.app.services.planner import derive_ending, derive_hook, plan_aligned_scenes, visual_groups
 from backend.app.services.renderer import cleanup_work, render_video, _prepare_narration
 from backend.app.services.alignment import align_narration
 from backend.app.services.stock import (
@@ -297,6 +299,7 @@ def _process_project(
     stock_selections: str,
     prefer_portrait: bool,
     video_mode: str,
+    scene_overrides: str = "",
 ) -> None:
     project_dir = DATA_DIR / project_id
     try:
@@ -352,6 +355,13 @@ def _process_project(
             director_mode = {"ai_auto": "ai", "authentic_auto": "authentic",
                              "hybrid_auto": "hybrid"}[visual_source]
             plans = make_plan(scenes, title, mode=director_mode)
+            overrides = _parse_scene_overrides(scene_overrides, len(scenes))
+            plans = [
+                replace(plan,
+                        visual_type=overrides.get(plan.scene_index, {}).get("visual_type", plan.visual_type),
+                        ai_prompt=overrides.get(plan.scene_index, {}).get("ai_prompt", plan.ai_prompt))
+                for plan in plans
+            ]
             state["visual_plan"] = serialized(plans)
             state["ai_tasks"] = []
             state["ai_clip_count"] = 0
@@ -523,6 +533,57 @@ def stock_status() -> dict[str, Any]:
     }
 
 
+def _parse_scene_overrides(raw: str, scene_count: int) -> dict[int, dict[str, str]]:
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Invalid storyboard options") from exc
+    if not isinstance(data, list) or len(data) > 36:
+        raise ValueError("Storyboard overrides must be a short list")
+    overrides: dict[int, dict[str, str]] = {}
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid storyboard override")
+        index = item.get("scene_index")
+        kind = item.get("visual_type")
+        if type(index) is not int or not 0 <= index < scene_count:
+            raise ValueError("Invalid storyboard scene index")
+        if kind not in {"ai", "authentic"}:
+            raise ValueError("Invalid storyboard visual type")
+        prompt = str(item.get("ai_prompt") or "").strip()
+        if len(prompt) > 1000:
+            raise ValueError("Storyboard prompt exceeds 1000 characters")
+        overrides[index] = {"visual_type": kind, **({"ai_prompt": prompt} if prompt else {})}
+    return overrides
+
+
+@app.post("/api/ai/storyboard")
+def preview_storyboard(
+    title: str = Form(""), script: str = Form(""),
+    visual_source: str = Form("hybrid_auto"),
+    stock_max_clips: int = Form(8), video_mode: str = Form("short"),
+) -> dict[str, Any]:
+    modes = {"ai_auto": "ai", "authentic_auto": "authentic", "hybrid_auto": "hybrid"}
+    if visual_source not in modes:
+        raise HTTPException(status_code=400, detail="Choose a documentary mode")
+    if not script.strip():
+        raise HTTPException(status_code=400, detail="Enter a narration script")
+    if video_mode not in {"short", "long"}:
+        raise HTTPException(status_code=400, detail="Invalid video mode")
+    limit = min(max(stock_max_clips, 1), int(video_profile(video_mode)["max_scenes"]))
+    groups = visual_groups(script, limit)
+    scenes = [SimpleNamespace(index=i, start=i * 5.0, end=(i + 1) * 5.0,
+                              duration=5.0, text=text)
+              for i, text in enumerate(groups)]
+    return {
+        "visual_plan": serialized(make_plan(scenes, title, mode=modes[visual_source])),
+        "timings_are_estimates": True,
+        "notice": "Synthetic scenes are illustrations, not footage of actual events.",
+    }
+
+
 @app.get("/api/ai/status")
 def ai_status() -> dict[str, Any]:
     return {"runway_configured": ai_video.configured(), "modes": ["ai_auto", "authentic_auto", "hybrid_auto"], "model": "gen4.5"}
@@ -616,6 +677,8 @@ def create_project(
     stock_providers: str = Form("pexels,pixabay"),
     stock_max_clips: int = Form(8),
     stock_selections: str = Form(""),
+    scene_overrides: str = Form(""),
+    storyboard_approved: bool = Form(False),
     prefer_portrait: bool = Form(True),
     video_mode: str = Form("short"),
     narration: UploadFile = File(...),
@@ -627,6 +690,13 @@ def create_project(
     if video_mode not in {"short", "long"}:
         raise HTTPException(status_code=400, detail="Invalid video mode")
     max_generations = min(max(max_generations, 0), 20)
+    if visual_source in {"ai_auto", "authentic_auto", "hybrid_auto"}:
+        if not storyboard_approved:
+            raise HTTPException(status_code=400, detail="Review and approve the storyboard first")
+        try:
+            _parse_scene_overrides(scene_overrides, min(stock_max_clips, int(video_profile(video_mode)["max_scenes"])))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if visual_source == "ai_auto" and max_generations <= 0:
         raise HTTPException(status_code=400, detail="AI-only mode requires a positive AI generation budget")
     if visual_source in {"ai_auto", "hybrid_auto"} and max_generations > 0 and not ai_video.configured():
@@ -719,6 +789,7 @@ def create_project(
         stock_selections,
         prefer_portrait,
         video_mode,
+        scene_overrides,
     )
     return {"project_id": project_id, "status": "queued"}
 
